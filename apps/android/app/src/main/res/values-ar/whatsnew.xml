@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ⚠️ 自动生成 —— 请勿手改。改 packages/changelog/android.json 后运行 `pnpm changelog:gen`。 -->
+<resources>
+    <string name="whatsnew_1_6_5_0_title">وصول مباشر إلى نطاق workers.dev الفرعي</string>
+    <string name="whatsnew_1_6_5_0_detail">عند تفعيل نطاق workers.dev الفرعي لأحد Workers، يظهر عنوانه الكامل الآن — انقر لفتحه.</string>
+    <string name="whatsnew_1_6_5_1_title">ربط D1 / KV بسرعة</string>
+    <string name="whatsnew_1_6_5_1_detail">اربط قاعدة بيانات D1 أو مساحة أسماء KV موجودة بأحد Workers مباشرة من صفحة الروابط، وألغِ الربط بالسهولة نفسها.</string>
+    <string name="whatsnew_1_6_5_2_title">إصلاح تعطّل عند تحرير النصوص البرمجية الطويلة</string>
+    <string name="whatsnew_1_6_5_2_detail">تم إصلاح تعطّل قد يحدث عند تحرير شفرة مصدر Worker أطول.</string>
+    <string name="whatsnew_1_6_4_0_title">نظرة عامة على استخدام الحساب</string>
+    <string name="whatsnew_1_6_4_0_detail">أصبحت شاشة النظرة العامة تعرض وحدة استخدام: استخدام Workers وR2 وD1 وKV مقابل الحصص في لمحة، مع تبديل الخطة وتفاصيل لكل مقياس.</string>
+    <string name="whatsnew_1_6_4_1_title">سجل عمليات نشر Worker وحذفه</string>
+    <string name="whatsnew_1_6_4_1_detail">اطّلع على عمليات نشر Worker السابقة واحذف القديمة، مع إمكانية تعديل وحذف Workers.</string>
+    <string name="whatsnew_1_6_4_2_title">مزيد من إدارة التخزين</string>
+    <string name="whatsnew_1_6_4_2_detail">أنشئ واحذف مساحات أسماء KV وحاويات R2، واحذف جداول D1 وعمليات نشر Pages.</string>
+    <string name="whatsnew_1_6_0_0_title">نطاقات Pages المخصصة</string>
+    <string name="whatsnew_1_6_0_0_detail">أدر النطاقات المخصصة داخل مشروع Pages مباشرة: إضافة وحذف وإعادة تحقق وفحص حالة DNS — مع إضافة سجل CNAME بلمسة واحدة عندما تكون منطقة النطاق ضمن حسابك.</string>
+    <string name="whatsnew_1_6_0_1_title">ترتيب القوائم</string>
+    <string name="whatsnew_1_6_0_1_detail">يمكن الآن ترتيب قوائم Workers و Pages حسب الاسم (افتراضي) أو تاريخ الإنشاء أو آخر تحديث — ويُحفظ اختيارك.</string>
+    <string name="whatsnew_1_5_0_0_title">صندوق أدوات المطوّر بدون تسجيل دخول</string>
+    <string name="whatsnew_1_5_0_0_detail">مجموعة من أدوات الشبكة العملية التي يمكنك استخدامها دون تسجيل الدخول: استعلام DNS، فحص شهادة SSL، ترويسات HTTP، WHOIS، تحديد موقع IP، حاسبة CIDR، وCloudflare trace — يمكن الوصول إليها مباشرةً من شاشة تسجيل الدخول.</string>
+    <string name="whatsnew_1_5_0_1_title">مركز الإشعارات</string>
+    <string name="whatsnew_1_5_0_1_detail">خدمة دفع مدمجة: احصل على نقطة نهاية خاصة بك وأرسل الرسائل إلى هذا الجهاز باستخدام curl أو سكربت بسيط — مع عنوان ومجموعة وصندوق وارد. لا يتطلب تسجيل الدخول إلى Cloudflare.</string>
+    <string name="whatsnew_1_5_0_2_title">تنبيهات Cloudflare على هاتفك</string>
+    <string name="whatsnew_1_5_0_2_detail">بعد تسجيل الدخول، يمكنك إدارة سياسات تنبيهات Cloudflare من هنا: اختر أنواع التنبيهات التي تهمّك (DDoS، فحوصات السلامة، انتهاء الشهادات، معدل أخطاء Workers والمزيد) واربطها بمركز الإشعارات بنقرة واحدة، لتصل الأحداث إلى هذا الجهاز. يتطلب نطاقًا بخطة Pro أو أعلى.</string>
+    <string name="whatsnew_1_4_2_0_title">تحسينات Workers AI</string>
+    <string name="whatsnew_1_4_2_0_detail">تصفّح النماذج مجمّعة حسب نوع المهمة، واعرض تفاصيل النموذج، وأصلحنا التشغيل التجريبي لنماذج توليد النص.</string>
+    <string name="whatsnew_1_4_0_title">منصّة المطوّرين الجديدة</string>
+    <string name="whatsnew_1_4_0_detail">أصبح Workers إلى جانب Workers AI وAI Gateway والطوابير وHyperdrive وDurable Objects وPages في مركز واحد.</string>
+    <string name="whatsnew_1_4_1_title">قواعد التخزين المؤقت وتحديد المعدّل وتوجيه البريد</string>
+    <string name="whatsnew_1_4_1_detail">تكتسب النطاقات قواعد التخزين المؤقت وقواعد تحديد المعدّل، إضافةً إلى توجيه البريد مع قواعد إعادة التوجيه وعناوين الوجهة.</string>
+    <string name="whatsnew_1_4_2_title">موازنة الحمل وZero Trust وعمليات إعادة التوجيه الجماعية</string>
+    <string name="whatsnew_1_4_2_detail">موازِنات تحميل جديدة (مع صحة التجمّعات)، وZero Trust (تطبيقات Access وتبديل قواعد Gateway)، وقوائم وعناصر إعادة التوجيه الجماعية.</string>
+    <string name="whatsnew_1_4_3_title">مساعد الذكاء الاصطناعي وWAF المرئي</string>
+    <string name="whatsnew_1_4_3_detail">مساعد ذكاء اصطناعي جديد مدعوم بـ Workers AI؛ ويمكن بناء قواعد WAF بصريًا أو توليدها من اللغة الطبيعية.</string>
+    <string name="whatsnew_1_4_4_title">R2 في تطبيق الملفات وخريطة الزيارات وسجل التدقيق</string>
+    <string name="whatsnew_1_4_4_detail">تصفّح وفتح كائنات R2 في تطبيق الملفات؛ وإضافة الزيارات حسب الدولة للتحليلات؛ وسجل تدقيق للحساب في الإعدادات؛ ويعرض Pages عمليات النشر مع إعادة المحاولة أو التراجع بنقرة واحدة.</string>
+    <string name="whatsnew_1_3_0_title">حزمة أمان النطاق</string>
+    <string name="whatsnew_1_3_0_detail">أوضاع تشفير SSL/TLS جديدة وشهادات طرفية، ومفتاح Universal SSL، وTransform Rules، وقواعد الوصول حسب IP، إضافةً إلى HTTP/2·HTTP/3·Brotli وعناصر تحكم أخرى للأداء والتخزين المؤقت.</string>
+    <string name="whatsnew_1_3_1_title">تحسينات R2 والمسح حسب URL</string>
+    <string name="whatsnew_1_3_1_detail">يدعم R2 الآن تصفح المجلدات ونسخ/نقل الكائنات وإعدادات CORS والوصول العام لكل حاوية؛ ويضيف مسح الذاكرة المؤقتة ”المسح حسب URL“.</string>
+    <string name="whatsnew_1_3_2_title">أداة الشاشة الرئيسية والسجلات الحية ودعم أوسع</string>
+    <string name="whatsnew_1_3_2_detail">أداة شاشة رئيسية جديدة ”نظرة عامة على الحساب“ عند الفجر؛ تُرقّى السجلات الحية إلى Live Updates (أندرويد 16)؛ ويمكن لميزة ”المساعدة والملاحظات“ إرفاق سجل تشخيصي؛ ويدعم الآن أندرويد 9 وأحدث.</string>
+    <string name="whatsnew_1_1_0_title">From viewing to managing</string>
+    <string name="whatsnew_1_1_0_detail">You can now add domains, create and delete D1 databases and tunnels, manage Worker variables/secrets/triggers/domains, and a tunnel’s public hostname routes.</string>
+    <string name="whatsnew_1_0_0_title">One-tap OAuth sign-in</string>
+    <string name="whatsnew_1_0_0_detail">Sign in with Cloudflare\'s official authorization — no API tokens to paste.</string>
+    <string name="whatsnew_1_0_1_title">Domains · Workers · Storage</string>
+    <string name="whatsnew_1_0_1_detail">DNS, analytics, WAF, Snippets, Workers live logs, and R2/D1/KV storage — all in one place.</string>
+</resources>

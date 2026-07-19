@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ⚠️ 自动生成 —— 请勿手改。改 packages/changelog/android.json 后运行 `pnpm changelog:gen`。 -->
+<resources>
+    <string name="whatsnew_1_6_5_0_title">workers.dev 子網域直達</string>
+    <string name="whatsnew_1_6_5_0_detail">Worker 開啟 workers.dev 子網域後，直接顯示完整存取網址，點一下即可開啟。</string>
+    <string name="whatsnew_1_6_5_1_title">快速綁定 D1 / KV</string>
+    <string name="whatsnew_1_6_5_1_detail">在變數與密鑰頁直接把現有 D1 資料庫或 KV 命名空間綁定到 Worker，也能一鍵解除。</string>
+    <string name="whatsnew_1_6_5_2_title">修復編輯長腳本閃退</string>
+    <string name="whatsnew_1_6_5_2_detail">修復編輯較長 Worker 原始碼時可能閃退的問題。</string>
+    <string name="whatsnew_1_6_4_0_title">帳戶用量總覽</string>
+    <string name="whatsnew_1_6_4_0_detail">總覽頁新增用量模組，一眼看清 Workers、R2、D1、KV 的用量與額度，可切換方案並檢視各項明細。</string>
+    <string name="whatsnew_1_6_4_1_title">Worker 部署歷史與刪除</string>
+    <string name="whatsnew_1_6_4_1_detail">檢視每個 Worker 的歷次部署並刪除舊部署，同時支援編輯與刪除 Worker。</string>
+    <string name="whatsnew_1_6_4_2_title">儲存管理增強</string>
+    <string name="whatsnew_1_6_4_2_detail">新增 KV 命名空間與 R2 儲存桶的建立/刪除、D1 資料表刪除，以及 Pages 部署刪除。</string>
+    <string name="whatsnew_1_6_0_0_title">Pages 自訂網域</string>
+    <string name="whatsnew_1_6_0_0_detail">Pages 專案現可直接管理自訂網域：新增、刪除、重新驗證並檢查解析狀態；網域在目前帳號時，還能一鍵新增指向專案的 CNAME 記錄。</string>
+    <string name="whatsnew_1_6_0_1_title">清單排序</string>
+    <string name="whatsnew_1_6_0_1_detail">Workers 與 Pages 清單新增排序：預設（名稱）、建立日期、最近更新，選擇會被記住。</string>
+    <string name="whatsnew_1_5_0_0_title">免登入開發者工具箱</string>
+    <string name="whatsnew_1_5_0_0_detail">無需登入即可使用一組常用網路工具：DNS 查詢、SSL 憑證檢查、HTTP 標頭、WHOIS、IP 歸屬、CIDR 計算與 Cloudflare trace。開啟 App 在登入頁就能直接進入。</string>
+    <string name="whatsnew_1_5_0_1_title">推送中心</string>
+    <string name="whatsnew_1_5_0_1_detail">內建推送服務：取得專屬端點，用 curl 或指令稿就能把訊息推到這台裝置，支援標題、分組與收件匣。無需登入 Cloudflare 即可使用。</string>
+    <string name="whatsnew_1_5_0_2_title">把 Cloudflare 告警推到手機</string>
+    <string name="whatsnew_1_5_0_2_detail">登入後可直接管理 Cloudflare 告警策略：選擇想關注的告警類型（DDoS、健康檢查、憑證到期、Workers 錯誤率等），一鍵接到推送中心，事件發生時直推到這台裝置。需帳戶下有 Pro 及以上方案的網域。</string>
+    <string name="whatsnew_1_4_2_0_title">Workers AI 體驗升級</string>
+    <string name="whatsnew_1_4_2_0_detail">現在可按任務類型分組瀏覽模型、檢視模型詳情，並修復了文字生成模型的試執行。</string>
+    <string name="whatsnew_1_4_0_title">全新「開發者平台」</string>
+    <string name="whatsnew_1_4_0_detail">把 Workers 與 Workers AI、AI Gateway、佇列、Hyperdrive、Durable Objects、Pages 收進統一的「開發者平台」中樞，一處直達。</string>
+    <string name="whatsnew_1_4_1_title">快取規則、速率限制與電子郵件路由</string>
+    <string name="whatsnew_1_4_1_detail">網域新增快取規則與速率限制規則，以及電子郵件路由（轉寄規則與目的地址管理）。</string>
+    <string name="whatsnew_1_4_2_title">負載平衡、Zero Trust 與批次重新導向</string>
+    <string name="whatsnew_1_4_2_detail">新增負載平衡器（含來源池健康）、Zero Trust（Access 應用與 Gateway 政策啟停）、批次重新導向清單與項目管理。</string>
+    <string name="whatsnew_1_4_3_title">AI 助手與視覺化 WAF</string>
+    <string name="whatsnew_1_4_3_detail">新增由 Workers AI 驅動的 AI 助手；WAF 規則支援視覺化建構，並可用自然語言產生運算式。</string>
+    <string name="whatsnew_1_4_4_title">R2 接入「檔案」、流量地圖與稽核紀錄</string>
+    <string name="whatsnew_1_4_4_detail">R2 物件可在系統「檔案」App 中瀏覽開啟；流量分析新增依國家/地區來源；設定新增帳號稽核紀錄；Pages 支援檢視部署並一鍵重新部署或回復。</string>
+    <string name="whatsnew_1_3_0_title">網域安全套件</string>
+    <string name="whatsnew_1_3_0_detail">新增 SSL/TLS 加密模式與邊緣憑證、Universal SSL 開關、Transform Rules、IP 存取規則，以及 HTTP/2·HTTP/3·Brotli 等效能與快取開關。</string>
+    <string name="whatsnew_1_3_1_title">R2 升級與依 URL 清快取</string>
+    <string name="whatsnew_1_3_1_detail">R2 支援資料夾瀏覽、物件複製/移動、儲存桶的 CORS 與公開存取設定；快取清理新增「依 URL 清理」。</string>
+    <string name="whatsnew_1_3_2_title">桌面小工具、即時日誌與更廣相容</string>
+    <string name="whatsnew_1_3_2_detail">新增晨昏「帳戶總覽」桌面小工具；即時日誌升級為實況通知（Android 16）；「說明與意見回饋」可附帶診斷日誌；現已相容 Android 9 以上。</string>
+    <string name="whatsnew_1_1_0_title">從查看到管理</string>
+    <string name="whatsnew_1_1_0_detail">現在可以新增網域、建立並刪除 D1 資料庫與隧道，管理 Worker 變數/密鑰/觸發器/網域，以及隧道的公開主機名稱路由。</string>
+    <string name="whatsnew_1_0_0_title">OAuth 一鍵登入</string>
+    <string name="whatsnew_1_0_0_detail">用 Cloudflare 官方授權登入，無需手動貼上 API Token。</string>
+    <string name="whatsnew_1_0_1_title">網域 · Workers · 儲存全覆蓋</string>
+    <string name="whatsnew_1_0_1_detail">DNS、流量分析、WAF、Snippets、Workers 即時日誌、R2/D1/KV 儲存一應俱全。</string>
+</resources>

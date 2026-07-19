@@ -1,0 +1,298 @@
+# Build an unsigned iOS IPA for later local re-signing (no certs / no profiles).
+# Pro features unlocked via OPENSOURCE_UNLOCKED (self-build path from CONTRIBUTING).
+name: iOS Unsigned IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: Xcode configuration
+        required: true
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Debug
+      unlock_pro:
+        description: Add OPENSOURCE_UNLOCKED (unlock Pro in self-builds)
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "apps/ios/**"
+      - ".github/workflows/ios-unsigned-ipa.yml"
+  workflow_call:
+    inputs:
+      configuration:
+        required: false
+        type: string
+        default: Release
+      unlock_pro:
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: ios-unsigned-ipa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-ipa:
+    name: Build unsigned IPA
+    # Project targets were created with Xcode 26.5 / 27.0 tooling.
+    # macos-15 only ships up to Xcode 26.3; macos-26 has 26.5 (default) and 26.6.
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    env:
+      PROJECT_PATH: apps/ios/Orange Cloud/Orange Cloud.xcodeproj
+      SCHEME: Orange Cloud
+      DERIVED_DATA: ${{ github.workspace }}/build/DerivedData
+      ARTIFACT_DIR: ${{ github.workspace }}/build/artifacts
+      RESULT_BUNDLE: ${{ github.workspace }}/build/OrangeCloud.xcresult
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode 26+
+        run: |
+          set -euo pipefail
+          echo "Installed Xcode apps:"
+          ls -1d /Applications/Xcode*.app 2>/dev/null || true
+
+          # Prefer highest Xcode_26*.app (e.g. Xcode_26.6.app).
+          SELECTED="$(ls -1d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n1 || true)"
+          if [[ -z "$SELECTED" || ! -d "$SELECTED" ]]; then
+            if [[ -d /Applications/Xcode.app ]]; then
+              SELECTED="/Applications/Xcode.app"
+            else
+              echo "error: no Xcode found" >&2
+              exit 1
+            fi
+          fi
+
+          echo "Using Xcode: $SELECTED"
+          sudo xcode-select -s "$SELECTED"
+          sudo xcodebuild -license accept || true
+          xcodebuild -version
+          xcodebuild -showsdks | grep -E 'iphoneos|watchos' || true
+
+          # Require a modern enough toolchain for this project.
+          XCODE_VER="$(xcodebuild -version | awk '/Xcode/ {print $2}')"
+          echo "Xcode version: $XCODE_VER"
+          MAJOR="$(echo "$XCODE_VER" | cut -d. -f1)"
+          MINOR="$(echo "$XCODE_VER" | cut -d. -f2)"
+          if [[ "$MAJOR" -lt 26 ]] || { [[ "$MAJOR" -eq 26 ]] && [[ "${MINOR:-0}" -lt 5 ]]; }; then
+            echo "error: need Xcode >= 26.5 (project CreatedOnToolsVersion 26.5/27.0), got $XCODE_VER" >&2
+            exit 1
+          fi
+
+      - name: Resolve build inputs
+        id: inputs
+        run: |
+          set -euo pipefail
+          CONFIG="${{ inputs.configuration }}"
+          if [[ -z "$CONFIG" ]]; then
+            CONFIG="Release"
+          fi
+          UNLOCK="${{ inputs.unlock_pro }}"
+          if [[ -z "$UNLOCK" ]]; then
+            UNLOCK="true"
+          fi
+          echo "configuration=$CONFIG" >> "$GITHUB_OUTPUT"
+          echo "unlock_pro=$UNLOCK" >> "$GITHUB_OUTPUT"
+          echo "Configuration=$CONFIG unlock_pro=$UNLOCK"
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -derivedDataPath "$DERIVED_DATA"
+
+      - name: Show scheme / destinations
+        run: |
+          set -euo pipefail
+          xcodebuild -list -project "$PROJECT_PATH"
+          xcodebuild -showBuildSettings \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -configuration "${{ steps.inputs.outputs.configuration }}" \
+            | grep -E 'PRODUCT_BUNDLE_IDENTIFIER|MARKETING_VERSION|CURRENT_PROJECT_VERSION|IPHONEOS_DEPLOYMENT_TARGET|SDKROOT|CODE_SIGN|SWIFT_VERSION' \
+            | head -n 60 || true
+
+      - name: Build (unsigned, device)
+        run: |
+          set -euo pipefail
+          mkdir -p "$DERIVED_DATA" "$ARTIFACT_DIR"
+          rm -rf "$RESULT_BUNDLE"
+
+          EXTRA_SWIFT_FLAGS=()
+          if [[ "${{ steps.inputs.outputs.unlock_pro }}" == "true" ]]; then
+            # Unlock all Pro features for self-compiled builds (see CONTRIBUTING.md).
+            EXTRA_SWIFT_FLAGS+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) OPENSOURCE_UNLOCKED')
+          fi
+
+          # No Apple Developer cert / profile.
+          # Prefer fully disabled signing (raw binary for later re-sign).
+          # If that fails on Watch/entitlements, fall back to ad-hoc identity "-".
+          COMMON_ARGS=(
+            -project "$PROJECT_PATH"
+            -scheme "$SCHEME"
+            -configuration "${{ steps.inputs.outputs.configuration }}"
+            -destination "generic/platform=iOS"
+            -derivedDataPath "$DERIVED_DATA"
+            -resultBundlePath "$RESULT_BUNDLE"
+            -skipPackagePluginValidation
+            -skipMacroValidation
+            ONLY_ACTIVE_ARCH=NO
+          )
+
+          set -o pipefail
+          set +e
+          set -x
+          xcodebuild \
+            "${COMMON_ARGS[@]}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            PROVISIONING_PROFILE_SPECIFIER= \
+            "${EXTRA_SWIFT_FLAGS[@]}" \
+            build 2>&1 | tee "$ARTIFACT_DIR/xcodebuild.log"
+          STATUS=${PIPESTATUS[0]}
+          set +x
+
+          if [[ $STATUS -ne 0 ]]; then
+            echo "Primary unsigned build failed (exit $STATUS). Retrying with ad-hoc CODE_SIGN_IDENTITY=- ..."
+            rm -rf "$RESULT_BUNDLE"
+            xcodebuild \
+              "${COMMON_ARGS[@]}" \
+              CODE_SIGN_IDENTITY=- \
+              CODE_SIGNING_REQUIRED=YES \
+              CODE_SIGNING_ALLOWED=YES \
+              CODE_SIGN_STYLE=Manual \
+              DEVELOPMENT_TEAM= \
+              PROVISIONING_PROFILE_SPECIFIER= \
+              "${EXTRA_SWIFT_FLAGS[@]}" \
+              build 2>&1 | tee -a "$ARTIFACT_DIR/xcodebuild.log"
+            STATUS=${PIPESTATUS[0]}
+          fi
+
+          exit $STATUS
+
+      - name: Dump build errors on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          LOG="$ARTIFACT_DIR/xcodebuild.log"
+          {
+            echo "## Build failure summary"
+            echo ""
+            echo "Xcode: $(xcodebuild -version | tr '\n' ' ')"
+            echo ""
+            if [[ -f "$LOG" ]]; then
+              echo "### error lines"
+              echo '```'
+              grep -E 'error:|fatal error:|BUILD FAILED|❌|Provisioning|CodeSign|requires a development team|entitlement' "$LOG" | tail -n 120 || true
+              echo '```'
+              echo ""
+              echo "### last 100 log lines"
+              echo '```'
+              tail -n 100 "$LOG" || true
+              echo '```'
+            else
+              echo "No xcodebuild.log"
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          if [[ -d "$RESULT_BUNDLE" ]]; then
+            xcrun xcresulttool get --path "$RESULT_BUNDLE" --format json > "$ARTIFACT_DIR/xcresult.json" 2>/dev/null || true
+          fi
+
+      - name: Locate .app and package IPA
+        id: package
+        run: |
+          set -euo pipefail
+          CONFIG="${{ steps.inputs.outputs.configuration }}"
+
+          APP_PATH=""
+          PREFERRED="$DERIVED_DATA/Build/Products/${CONFIG}-iphoneos/Orange Cloud.app"
+          if [[ -d "$PREFERRED" ]]; then
+            APP_PATH="$PREFERRED"
+          else
+            while IFS= read -r -d '' candidate; do
+              APP_PATH="$candidate"
+              break
+            done < <(find "$DERIVED_DATA/Build/Products" -type d -name 'Orange Cloud.app' -print0 2>/dev/null || true)
+          fi
+          if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
+            echo "error: Orange Cloud.app not found under DerivedData" >&2
+            find "$DERIVED_DATA/Build/Products" -maxdepth 3 -type d || true
+            exit 1
+          fi
+          echo "App: $APP_PATH"
+
+          VERSION="$(
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist" 2>/dev/null || echo "0.0.0"
+          )"
+          BUILD="$(
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist" 2>/dev/null || echo "0"
+          )"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IPA_NAME="OrangeCloud-${VERSION}-${BUILD}-${SHORT_SHA}-unsigned.ipa"
+          IPA_PATH="$ARTIFACT_DIR/$IPA_NAME"
+
+          chmod +x apps/ios/scripts/package-unsigned-ipa.sh
+          apps/ios/scripts/package-unsigned-ipa.sh "$APP_PATH" "$IPA_PATH"
+          cp "$IPA_PATH" "$ARTIFACT_DIR/OrangeCloud-unsigned.ipa"
+
+          {
+            echo "ipa_path=$IPA_PATH"
+            echo "ipa_name=$IPA_NAME"
+            echo "version=$VERSION"
+            echo "build=$BUILD"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Unsigned IPA"
+            echo ""
+            echo "- **File:** \`$IPA_NAME\`"
+            echo "- **Version:** $VERSION ($BUILD)"
+            echo "- **Config:** $CONFIG"
+            echo "- **OPENSOURCE_UNLOCKED:** ${{ steps.inputs.outputs.unlock_pro }}"
+            echo "- **Signing:** none / ad-hoc (re-sign locally before install)"
+            echo "- **Xcode:** $(xcodebuild -version | tr '\n' ' ')"
+            echo "- **Runner:** macos-26"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrangeCloud-unsigned-ipa
+          path: |
+            ${{ env.ARTIFACT_DIR }}/OrangeCloud-unsigned.ipa
+            ${{ steps.package.outputs.ipa_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrangeCloud-xcodebuild-log
+          path: |
+            ${{ env.ARTIFACT_DIR }}/xcodebuild.log
+            ${{ env.ARTIFACT_DIR }}/xcresult.json
+          if-no-files-found: ignore
+          retention-days: 7
