@@ -70,11 +70,50 @@ jobs:
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "Android version: $VERSION_NAME ($VERSION_CODE)"
 
-      - name: Set up JDK 17
+      # apps/android/gradle/gradle-daemon-jvm.properties 里钉死了：
+      #   toolchainVendor=jetbrains / toolchainVersion=21
+      # 这是 Gradle 的 Daemon JVM criteria：守护进程必须是「JetBrains Runtime 21」。
+      # 用 Temurin 17 会直接失败（vendor 不匹配 → 尝试下载 → 该文件没有 toolchainUrl
+      # → "No defined toolchain download url for LINUX on x86_64 architecture"）。
+      - name: Set up JDK (JetBrains Runtime 21)
+        id: jdk
+        continue-on-error: true
+        uses: actions/setup-java@v4
+        with:
+          distribution: jetbrains
+          java-version: "21"
+
+      - name: Verify JDK vendor/version
+        id: jdkcheck
+        run: |
+          set -uo pipefail
+          java -version 2>&1 | sed 's/^/  /'
+          VENDOR_LINE="$(java -XshowSettings:properties -version 2>&1 | grep -m1 '^ *java\.vendor =' || true)"
+          echo "vendor: ${VENDOR_LINE:-（未识别）}"
+          if echo "$VENDOR_LINE" | grep -qi 'jetbrains'; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::未拿到 JetBrains Runtime —— 回退到 Temurin 21，并放宽 daemon 的 vendor 约束。"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 回退分支：JetBrains Runtime 下载不到时才走这里。
+      # 删掉 toolchainVendor 后，任意 JDK 21 都能满足 criteria（仅作用于本次 checkout）。
+      - name: Fallback JDK (Temurin 21)
+        if: steps.jdkcheck.outputs.ok != 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
+
+      - name: Relax daemon JVM vendor criteria
+        if: steps.jdkcheck.outputs.ok != 'true'
+        run: |
+          set -euo pipefail
+          F="apps/android/gradle/gradle-daemon-jvm.properties"
+          sed -i '/^[[:space:]]*toolchainVendor=/d' "$F"
+          echo "::warning::已从 $F 移除 toolchainVendor=jetbrains（CI 回退方案）。"
+          cat "$F"
 
       # 不要用 android-actions/setup-android@v3：它内部会执行 `sdkmanager tools`，
       # 而新版 cmdline-tools（16.0+）已移除 `tools` 包，该 action 会以 exit code 1 崩溃。
@@ -205,7 +244,13 @@ jobs:
           chmod +x apps/android/gradlew
           cd apps/android
 
-          GRADLE_ARGS=(":app:assembleOssRelease" "--stacktrace")
+          # 显式把当前 JDK 告诉 Gradle，确保它能被 toolchain 探测到（不依赖自动探测）。
+          GRADLE_ARGS=(
+            "-Dorg.gradle.java.installations.paths=${JAVA_HOME}"
+            ":app:assembleOssRelease"
+            "--stacktrace"
+          )
+          echo "JAVA_HOME=$JAVA_HOME"
           if [[ -n "${OAUTH_CLIENT_ID_SECRET:-}" ]]; then
             GRADLE_ARGS=("-POAUTH_CLIENT_ID=$OAUTH_CLIENT_ID_SECRET" "${GRADLE_ARGS[@]}")
           else
