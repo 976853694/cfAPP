@@ -104,6 +104,15 @@ struct WorkerDetailView: View {
                 ) {
                     WorkerTriggersView(accountId: script.accountId, scriptName: script.id, session: session)
                 }
+                PermissionGatedNavigationLink(
+                    label: String(localized: "构建"),
+                    systemImage: "hammer.circle",
+                    requiredScope: "workers-ci.read",
+                    tint: .teal,
+                    showsChevron: true
+                ) {
+                    WorkerBuildsView(scriptName: script.id, session: session)
+                }
                 ProGatedNavigationLink(
                     label: String(localized: "部署历史"),
                     systemImage: "clock.arrow.circlepath",
@@ -131,6 +140,15 @@ struct WorkerDetailView: View {
                     feature: .workerTail
                 ) {
                     WorkerTailView(accountId: script.accountId, scriptName: script.id, session: session)
+                }
+                // 历史日志与实时日志互补：tail 只播放连接期间的调用，这里查已落库的事件
+                ProGatedNavigationLink(
+                    label: String(localized: "历史日志"),
+                    systemImage: "clock.badge.checkmark",
+                    requiredScope: "workers-observability.read",
+                    feature: .workerTail
+                ) {
+                    WorkerLogsView(accountId: script.accountId, scriptName: script.id, session: session)
                 }
             }
             .glassRow()

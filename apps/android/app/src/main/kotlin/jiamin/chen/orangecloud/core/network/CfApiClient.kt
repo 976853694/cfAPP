@@ -61,6 +61,20 @@ class CfApiClient @Inject constructor(
         return decodeResult(executeRaw("PATCH", path, emptyList(), payload, JSON_MEDIA_TYPE), serializer<T>())
     }
 
+    /**
+     * 不走 CF 标准信封的 2xx JSON 端点（URL Scanner v2、Email Routing suppression 列表等）：
+     * 顶层就是目标对象，没有 success/result 包装。非 2xx 仍由 executeRaw 统一抛错。
+     */
+    suspend inline fun <reified T> getBare(path: String, query: List<Pair<String, String>> = emptyList()): T {
+        val bytes = executeRaw("GET", path, query, null, JSON_MEDIA_TYPE)
+        return decodeBare(bytes, serializer<T>())
+    }
+
+    suspend inline fun <reified T, reified B> postBare(path: String, body: B): T {
+        val payload = json.encodeToString(serializer<B>(), body).encodeToByteArray()
+        return decodeBare(executeRaw("POST", path, emptyList(), payload, JSON_MEDIA_TYPE), serializer<T>())
+    }
+
     /** 只关心 success 的请求（DELETE 等）。非 2xx 由 executeRaw 抛错。 */
     suspend fun delete(path: String) {
         executeRaw("DELETE", path, emptyList(), null, JSON_MEDIA_TYPE)
@@ -117,9 +131,21 @@ class CfApiClient @Inject constructor(
         checkSuccess(executeRaw("PUT", path, emptyList(), payload, JSON_MEDIA_TYPE))
     }
 
+    /** JSON PATCH，只校验 success（secrets-bulk 等写端点 result 可能为 null）。 */
+    suspend inline fun <reified B> patchChecked(path: String, body: B) {
+        val payload = json.encodeToString(serializer<B>(), body).encodeToByteArray()
+        checkSuccess(executeRaw("PATCH", path, emptyList(), payload, JSON_MEDIA_TYPE))
+    }
+
     /** KV value 等非 JSON 信封端点：返回原始字节 */
     suspend fun getRaw(path: String, query: List<Pair<String, String>> = emptyList()): ByteArray =
         executeRaw("GET", path, query, null, null)
+
+    /** JSON body POST，返回原始字节（Workers AI 文生图直接回图片二进制，不走 JSON 信封解码）。 */
+    suspend inline fun <reified B> postRaw(path: String, body: B): ByteArray {
+        val payload = json.encodeToString(serializer<B>(), body).encodeToByteArray()
+        return executeRaw("POST", path, emptyList(), payload, JSON_MEDIA_TYPE)
+    }
 
     /** 原始字节 PUT（R2 对象上传等），自带 Content-Type */
     suspend inline fun <reified T> putRaw(path: String, body: ByteArray, contentType: String): T =
@@ -279,15 +305,40 @@ class CfApiClient @Inject constructor(
     }
 
     /** GraphQL Analytics：信封 {data, errors}，GraphQL 错误时 HTTP 仍 200 */
-    suspend inline fun <reified D, reified V> graphQL(query: String, variables: V): D {
+    suspend inline fun <reified D, reified V> graphQL(query: String, variables: V): D =
+        graphQLAllowingPartialAuthz<D, V>(query, variables).first
+
+    /**
+     * 同 graphQL，但把「部分字段 authz、其余字段照常返回」这一情况回给调用方（second = true）。
+     *
+     * GraphQL 允许错误与数据同时出现——免费账号最典型：today 窗口有数据、month 窗口 authz。
+     * 此时 data 已经解出来了，整包丢掉等于把手上的数据扔了（概览用量会整块误降级成
+     * 「无账户级数据」）。故：authz 且 data 非空就返回部分数据，只有 data 为空才抛给调用方降级。
+     * 非 authz 的错误（查询写错、schema 不支持等）照旧抛出，不静默吞掉。
+     */
+    suspend inline fun <reified D, reified V> graphQLAllowingPartialAuthz(
+        query: String,
+        variables: V,
+    ): Pair<D, Boolean> {
         val payload = json.encodeToString(GraphQLRequest.serializer(serializer<V>()), GraphQLRequest(query, variables)).encodeToByteArray()
         val bytes = executeRaw("POST", "graphql", emptyList(), payload, JSON_MEDIA_TYPE)
         val env = json.decodeFromString(GraphQLResponse.serializer(serializer<D>()), bytes.decodeToString())
-        env.errors.firstOrNull()?.let { throw ApiError.Cloudflare(listOf(ApiError.CfError(0, it.message))) }
-        return env.data ?: throw ApiError.Decoding(IllegalStateException("GraphQL data missing"))
+        env.errors.firstOrNull()?.let { first ->
+            val data = env.data
+            if (env.errors.any { it.isAuthz } && data != null) return data to true
+            throw ApiError.Cloudflare(listOf(ApiError.CfError(0, first.message)))
+        }
+        return (env.data ?: throw ApiError.Decoding(IllegalStateException("GraphQL data missing"))) to false
     }
 
     // MARK: - 内部实现（@PublishedApi internal 供上方 inline 函数引用）
+
+    @PublishedApi
+    internal fun <T> decodeBare(bytes: ByteArray, serializer: KSerializer<T>): T = try {
+        json.decodeFromString(serializer, bytes.decodeToString())
+    } catch (e: Exception) {
+        throw ApiError.Decoding(e)
+    }
 
     @PublishedApi
     internal fun <T> decodeResult(bytes: ByteArray, elementSerializer: KSerializer<T>): T {
@@ -298,6 +349,44 @@ class CfApiClient @Inject constructor(
         }
         if (!env.success) throw ApiError.Cloudflare(env.errors.map { ApiError.CfError(it.code, it.message) })
         return env.result ?: throw ApiError.Decoding(IllegalStateException("result missing"))
+    }
+
+    /**
+     * 对 Cloudflare 系外部主机（如 R2 SQL 的 api.sql.cloudflarestorage.com）发 JSON POST，
+     * 复用 OAuth Bearer 与 401 刷新重试，返回 2xx 原始响应体。
+     * 注意：这些主机不一定走 client/v4 信封，错误体尽力解析 CF 业务错误。
+     */
+    suspend fun postExternalJson(url: String, body: ByteArray, isRetry: Boolean = false): ByteArray {
+        val token = tokenProvider.validAccessToken()
+        val request = Request.Builder()
+            .url(url.toHttpUrl())
+            .header("Authorization", "Bearer $token")
+            .method("POST", body.toRequestBody(JSON_MEDIA_TYPE.toMediaTypeOrNull()))
+            .build()
+        val (code, bytes) = try {
+            withContext(Dispatchers.IO) {
+                httpClient.newCall(request).execute().use { resp ->
+                    resp.code to (resp.body?.bytes() ?: ByteArray(0))
+                }
+            }
+        } catch (e: IOException) {
+            AppLog.network.error("POST $url (external) -> 网络错误: ${e.message}")
+            throw ApiError.Network(e)
+        }
+        AppLog.network.info("POST ${url.toHttpUrl().host} (external) -> $code${if (isRetry) " [retry]" else ""}")
+        if (code == 401 && !isRetry) {
+            tokenProvider.refreshAccessToken()
+            return postExternalJson(url, body, isRetry = true)
+        }
+        if (code !in 200..299) {
+            val cfErrors = runCatching {
+                json.decodeFromString(CfEnvelope.serializer(JsonElement.serializer()), bytes.decodeToString()).errors
+            }.getOrNull().orEmpty()
+            if (cfErrors.isNotEmpty()) throw ApiError.Cloudflare(cfErrors.map { ApiError.CfError(it.code, it.message) })
+            if (code == 401) throw ApiError.Unauthorized
+            throw ApiError.Http(code)
+        }
+        return bytes
     }
 
     @PublishedApi

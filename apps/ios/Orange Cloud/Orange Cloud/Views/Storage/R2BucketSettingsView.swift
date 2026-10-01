@@ -16,12 +16,16 @@ struct R2BucketSettingsView: View {
     @Environment(AuthManager.self) private var auth
     @Environment(EntitlementStore.self) private var entitlements
     @State private var viewModel: R2BucketSettingsViewModel
+    @State private var catalogViewModel: R2CatalogViewModel
+    @State private var showCatalogEnableConfirm = false
     @State private var showAddCors = false
     @State private var showDenied = false
+    @State private var showSQLConsole = false
 
     // 文件 App 挂载（Pro）
     private let bucketName: String
     private let accountId: String
+    private let session: SessionStore
     @State private var isMounted = false
     @State private var isMountBusy = false
     @State private var mountPaywall = false
@@ -30,8 +34,14 @@ struct R2BucketSettingsView: View {
         self.canWrite = canWrite
         self.bucketName = bucket.name
         self.accountId = session.selectedAccount?.id ?? ""
+        self.session = session
         _viewModel = State(initialValue: R2BucketSettingsViewModel(
             service: session.r2Service,
+            accountId: session.selectedAccount?.id ?? "",
+            bucketName: bucket.name
+        ))
+        _catalogViewModel = State(initialValue: R2CatalogViewModel(
+            service: session.r2CatalogService,
             accountId: session.selectedAccount?.id ?? "",
             bucketName: bucket.name
         ))
@@ -43,6 +53,7 @@ struct R2BucketSettingsView: View {
                 filesSection
                 managedSection
                 customDomainsSection
+                dataCatalogSection
                 corsSection
             }
             .navigationTitle("桶设置")
@@ -53,6 +64,16 @@ struct R2BucketSettingsView: View {
                 }
             }
             .task { await refreshMountState() }
+            .task { if auth.hasScope("r2-catalog.read") { await catalogViewModel.load() } }
+            .confirmationDialog(
+                "启用数据目录",
+                isPresented: $showCatalogEnableConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("启用") { Task { await catalogViewModel.setEnabled(true) } }
+            } message: {
+                Text("启用后该桶将作为 Apache Iceberg 目录，目录操作按量计费（每月含 100 万次免费额度）。")
+            }
             .sheet(isPresented: $mountPaywall) {
                 PaywallView(feature: .filesApp)
             }
@@ -67,6 +88,9 @@ struct R2BucketSettingsView: View {
                 R2CorsRuleEditor { origins, methods, maxAge in
                     Task { await viewModel.addCorsRule(origins: origins, methods: methods, maxAgeSeconds: maxAge) }
                 }
+            }
+            .sheet(isPresented: $showSQLConsole) {
+                R2SQLQueryView(session: session, accountId: accountId, bucketName: bucketName)
             }
             .alert("权限不足", isPresented: $showDenied) {
                 Button("好", role: .cancel) {}
@@ -209,6 +233,65 @@ struct R2BucketSettingsView: View {
     }
 
     // MARK: - CORS
+
+    /// R2 数据目录（Iceberg）。启用是计费动作，故走二次确认。
+    @ViewBuilder
+    private var dataCatalogSection: some View {
+        if auth.hasScope("r2-catalog.read") {
+            Section {
+                if catalogViewModel.isLoading && !catalogViewModel.loaded {
+                    ProgressView()
+                } else {
+                    Toggle("启用数据目录", isOn: Binding(
+                        get: { catalogViewModel.isEnabled },
+                        set: { on in
+                            if on {
+                                showCatalogEnableConfirm = true
+                            } else {
+                                Task { await catalogViewModel.setEnabled(false) }
+                            }
+                        }
+                    ))
+                    .disabled(!auth.hasScope("r2-catalog.write") || catalogViewModel.isMutating)
+
+                    if let catalog = catalogViewModel.catalog, catalogViewModel.isEnabled {
+                        if let name = catalog.name {
+                            LabeledContent("目录名") {
+                                Text(name)
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        if let compaction = catalog.maintenanceConfig?.compaction?.state {
+                            LabeledContent("自动压实", value: compaction == "enabled"
+                                           ? String(localized: "已开启") : String(localized: "已关闭"))
+                        }
+                        if catalogViewModel.namespaces.isEmpty {
+                            Text("暂无命名空间")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            ForEach(catalogViewModel.namespaces) { namespace in
+                                Text(namespace.displayName)
+                                    .font(.caption.monospaced())
+                            }
+                        }
+                        // R2 SQL 控制台（2026-08 起计费：$0.0025/GB 扫描、10GB/月免费）
+                        if auth.hasScope("r2-catalog-sql.read") {
+                            Button {
+                                showSQLConsole = true
+                            } label: {
+                                Label("R2 SQL 查询", systemImage: "terminal")
+                            }
+                        }
+                    }
+                }
+            } header: {
+                Text("数据目录")
+            } footer: {
+                Text("把这个桶变成可被 Spark、Snowflake 等引擎查询的 Iceberg 数据仓库。注意：目录已启用时手动删除对象会破坏目录。")
+            }
+        }
+    }
 
     private var corsSection: some View {
         Section {

@@ -10,7 +10,148 @@ import Foundation
 
 nonisolated enum WhatsNewGenerated {
     static let releases: [WhatsNewRelease] = [
-        WhatsNewRelease(version: "1.8.6", items: [
+        WhatsNewRelease(version: "2.1.3", items: [
+            WhatsNewItem(
+                icon:   "rectangle.landscape.rotate",
+                title:  String(localized: "横屏与大屏适配", table: "WhatsNew"),
+                detail: String(localized: "App 现在可以横过来用，宽屏上内容会收在舒适的阅读宽度里，不再被拉得很长；顺带修好了域名页偶尔打开是一片空白的问题。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "list.bullet",
+                title:  String(localized: "长列表不再漏项", table: "WhatsNew"),
+                detail: String(localized: "R2 存储桶超过 100 个，或邮件路由规则、目标地址、Durable Objects、Hyperdrive 超过 20 条时，后面的内容以前看不到，现在会全部列出；刚添加、还没验证的邮件目标地址也会显示出来。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "checkmark.shield",
+                title:  String(localized: "更稳，少打扰", table: "WhatsNew"),
+                detail: String(localized: "网络被拦截时（比如公共 Wi-Fi 登录页、WAF 挑战页）不再被误退出登录；修复一处偶发的启动闪退；下拉刷新或快速切换时间范围时，不再提示「已取消」或显示错位的数据。", table: "WhatsNew")
+            )
+        ]),
+        WhatsNewRelease(version: "2.1.2", items: [
+            WhatsNewItem(
+                icon:   "clock.badge.checkmark",
+                title:  String(localized: "日志可以往回翻了", table: "WhatsNew"),
+                detail: String(localized: "以前只有「实时日志」，它只播放你盯着看的那几分钟里发生的请求，退出就没了。现在 Worker 详情多了「历史日志」，可以按 30 分钟到 3 天的范围往回查已经发生过的调用，能按级别筛选、按关键词搜索，点开还能看状态码、耗时和 Ray ID。前提是这个 Worker 已经开启了 Observability。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "wrench.and.screwdriver",
+                title:  String(localized: "打开大脚本不再卡死", table: "WhatsNew"),
+                detail: String(localized: "用打包工具部署的 Worker，源码常常被压缩成很长的一两行，点「更新代码」会把整个界面卡死。编辑器换了实现，正常体量的脚本编辑起来更跟手；超大或压缩过的脚本转为只读，并给出「导入 .js 文件整体替换」这条路——现有的变量、密钥和绑定照旧保留。Snippets 的编辑器一并改善。", table: "WhatsNew")
+            )
+        ]),
+        WhatsNewRelease(version: "2.1.1", items: [
+            WhatsNewItem(
+                icon:   "square.and.pencil",
+                title:  String(localized: "触发规则可以编辑了", table: "WhatsNew"),
+                detail: String(localized: "Snippet 的触发规则以前只能新建、启停和删除，改一个字都得删掉重加。现在点按规则就能改表达式和描述，规则原来的顺序也不会因此变动。", table: "WhatsNew")
+            )
+        ]),
+        WhatsNewRelease(version: "2.1.0", items: [
+            WhatsNewItem(
+                icon:   "checkmark.shield",
+                title:  String(localized: "随手管理 Turnstile 人机验证", table: "WhatsNew"),
+                detail: String(localized: "概览页新增 Turnstile 入口：查看全部组件，新建、改域名与模式，密钥一键轮换（可留 2 小时宽限平滑过渡），sitekey 和 secret 点按即复制。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "terminal",
+                title:  String(localized: "R2 数据目录，直接用 SQL 查", table: "WhatsNew"),
+                detail: String(localized: "桶设置的数据目录里新增 R2 SQL 查询控制台：点选表名生成查询，结果表格展示。按扫描量计费（每月 10 GB 免费），控制台内有提示。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "key.fill",
+                title:  String(localized: "Workers 密钥，一次批量导入", table: "WhatsNew"),
+                detail: String(localized: "粘贴一段 JSON 就能批量写入变量或密钥：走 Cloudflare 新的批量接口，单次调用原子生效，不再逐条保存。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "bolt.horizontal",
+                title:  String(localized: "缓存规则认识 JA3/JA4 了", table: "WhatsNew"),
+                detail: String(localized: "表达式速插芯片补上 JA3/JA4 指纹字段（需 Bot Management 订阅）；带 Vary 多版本缓存的规则自动只读，避免在 App 里误改丢掉配置。", table: "WhatsNew")
+            )
+        ]),
+        WhatsNewRelease(version: "2.0.0", items: [
+            WhatsNewItem(
+                icon:   "brain",
+                title:  String(localized: "一个开关拦住 AI 爬虫", table: "WhatsNew"),
+                detail: String(localized: "域名详情页新增「AI 爬虫」一栏，三档任选：不拦截、只拦广告页、全站拦截。AI 内容相关的两个设置也挪到了同一页，不必再开控制台。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "waveform.path.ecg",
+                title:  String(localized: "源站掉线，Cloudflare 直接推给你", table: "WhatsNew"),
+                detail: String(localized: "域名详情页新增独立健康检查：查看每个源站的状态与失败原因，左滑暂停、右滑删除。打开「源站异常时通知我」后，由 Cloudflare 在状态变化时直接推送，App 不用开着。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "calendar.badge.clock",
+                title:  String(localized: "域名到期日一眼看到", table: "WhatsNew"),
+                detail: String(localized: "概览页新增「域名注册商」：在 Cloudflare 注册的域名，到期日、自动续费与转移锁状态都列在一起，快到期的会标出来。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "scope",
+                title:  String(localized: "看清一条请求在 Cloudflare 里走过什么", table: "WhatsNew"),
+                detail: String(localized: "概览页新增「请求追踪」：填一个网址就能看到这条请求依次命中了哪些规则——重定向、WAF、缓存规则、Worker，每一步是否生效都写清楚，调规则不用再靠猜。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "lock.shield",
+                title:  String(localized: "DNSSEC 与 DNS 进阶设置", table: "WhatsNew"),
+                detail: String(localized: "域名详情页新增 DNS 设置：一键开关 DNSSEC 并复制要填到注册商那边的 DS 记录，另可调整 CNAME 展平方式与域名服务器类型。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "hammer",
+                title:  String(localized: "Worker 构建失败会提醒你", table: "WhatsNew"),
+                detail: String(localized: "Worker 详情页新增构建记录：每次构建的状态、耗时与触发来源都能看到。挑几个关心的 Worker 开启监视，构建失败时会收到通知。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "square.grid.2x2",
+                title:  String(localized: "更多模块，以及一处处打磨", table: "WhatsNew"),
+                detail: String(localized: "新增 R2 数据目录、托管请求头、URL 安全扫描与 Email 抑制列表。审计日志点进任意一条即可查看同一资源的完整变更历史；缓存规则表达式加了常用字段速插（含 Bot 分数与来源 ASN）；Durable Objects 增加内存分位数。并修复隧道详情页不显示活跃连接的问题。", table: "WhatsNew")
+            )
+        ]),
+        WhatsNewRelease(version: "1.9.3", items: [
+            WhatsNewItem(
+                icon:   "pause.circle",
+                title:  String(localized: "一键暂停 Cloudflare", table: "WhatsNew"),
+                detail: String(localized: "域名详情的「操作」里新增「暂停 Cloudflare」开关。暂停后流量不再经过 Cloudflare——WAF、缓存加速与源站 IP 隐藏都会失效，DNS 仍由 Cloudflare 解析；恢复同样一键完成，两者约 5 分钟生效。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "speedometer",
+                title:  String(localized: "概览页更跟手", table: "WhatsNew"),
+                detail: String(localized: "从概览页打开 Pro 功能的订阅说明时，整页不再跟着重算，弹出与收起都不会顿挫。", table: "WhatsNew")
+            )
+        ]),
+        WhatsNewRelease(version: "1.9.2", items: [
+            WhatsNewItem(
+                icon:   "person.crop.circle.badge.checkmark",
+                title:  String(localized: "记住你的默认账号", table: "WhatsNew"),
+                detail: String(localized: "有多个 Cloudflare 账号时，App 会记住你上次选中的那一个，下次打开直接进入它，不再固定回到列表里的第一个。", table: "WhatsNew")
+            )
+        ]),
+        WhatsNewRelease(version: "1.9.1", items: [
+            WhatsNewItem(
+                icon:   "magnifyingglass",
+                title:  String(localized: "一处搜遍所有资源", table: "WhatsNew"),
+                detail: String(localized: "概览页顶栏的放大镜可一次搜索域名、Worker、R2 存储桶、D1 数据库、KV 命名空间与隧道，点一下直达；任意资源都能星标固定到概览页。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "bell.badge",
+                title:  String(localized: "告警中心", table: "WhatsNew"),
+                detail: String(localized: "概览页新增告警卡片，汇总需要注意的资源——未启用的域名、状态异常的隧道等，点一下直达。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "text.magnifyingglass",
+                title:  String(localized: "实时日志更好用", table: "WhatsNew"),
+                detail: String(localized: "Worker 实时日志支持关键词搜索与级别筛选；长按复制整行，轻点展开完整详情并选取片段。「暂停」现在只冻结画面、日志照常接收，恢复后能看到完整记录。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "clock.arrow.circlepath",
+                title:  String(localized: "SQL 历史与收藏", table: "WhatsNew"),
+                detail: String(localized: "D1 查询自动记录最近 12 条，常用语句可收藏（按数据库分别保存）；查询结果一键导出 CSV，表详情还能查看索引。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "photo.artframe",
+                title:  String(localized: "Workers AI 文生图", table: "WhatsNew"),
+                detail: String(localized: "模型试运行新增文生图：输入提示词直接出图，可分享保存。", table: "WhatsNew")
+            )
+        ]),
+        WhatsNewRelease(version: "1.8.7", items: [
             WhatsNewItem(
                 icon:   "globe",
                 title:  String(localized: "workers.dev 子域直达", table: "WhatsNew"),
@@ -20,6 +161,11 @@ nonisolated enum WhatsNewGenerated {
                 icon:   "cube.fill",
                 title:  String(localized: "快速绑定 D1 / KV", table: "WhatsNew"),
                 detail: String(localized: "在变量与密钥页直接把现有 D1 数据库或 KV 命名空间绑定到 Worker，也能一键解除。", table: "WhatsNew")
+            ),
+            WhatsNewItem(
+                icon:   "shippingbox.fill",
+                title:  String(localized: "快速绑定 R2 存储桶", table: "WhatsNew"),
+                detail: String(localized: "资源绑定新增 R2：可把现有存储桶直接绑定到 Worker，与 D1 / KV 一样支持一键解除。", table: "WhatsNew")
             )
         ]),
         WhatsNewRelease(version: "1.8.5", items: [

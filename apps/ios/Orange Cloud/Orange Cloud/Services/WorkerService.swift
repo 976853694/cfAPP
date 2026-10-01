@@ -35,7 +35,10 @@ struct WorkerService {
             "accounts/\(accountId)/workers/scripts/\(scriptName)/content/v2"
         )
         let contentType = response.value(forHTTPHeaderField: "Content-Type")
-        return WorkerContent.parse(data: data, contentType: contentType)
+        // 打包产物可达数 MB，multipart 切分不放主线程（本类型默认 MainActor 隔离）
+        return await Task.detached(priority: .userInitiated) {
+            WorkerContent.parse(data: data, contentType: contentType)
+        }.value
     }
 
     /// 脚本设置（绑定 + 兼容性日期/标志）
@@ -286,6 +289,29 @@ struct WorkerService {
     /// 删除密钥
     func deleteSecret(accountId: String, scriptName: String, name: String) async throws {
         try await client.delete("accounts/\(accountId)/workers/scripts/\(scriptName)/secrets/\(name)")
+    }
+
+    /// 批量写密钥（2026-06 新端点，单次 ≤100 项，原子生效）。
+    /// JSON Merge Patch：对象 → 新建/覆盖，null → 删除；未提及的密钥不受影响。
+    func bulkPatchSecrets(
+        accountId: String,
+        scriptName: String,
+        upserts: [(name: String, text: String)],
+        deletes: [String] = []
+    ) async throws {
+        var secrets: [String: WorkerSecretInput?] = [:]
+        for item in upserts {
+            secrets[item.name] = WorkerSecretInput(name: item.name, text: item.text)
+        }
+        for name in deletes {
+            // 双重可选陷阱：subscript 赋 nil 会移除键，须 updateValue 才能存下「值为 null」
+            secrets.updateValue(nil, forKey: name)
+        }
+        let response: CFAPIResponse<EmptyResponse> = try await client.patch(
+            "accounts/\(accountId)/workers/scripts/\(scriptName)/secrets-bulk",
+            body: WorkerSecretsBulkPatch(secrets: secrets)
+        )
+        guard response.success else { throw response.toAPIError() }
     }
 
     // MARK: - Cron 触发器

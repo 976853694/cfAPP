@@ -59,6 +59,7 @@ nonisolated struct CacheActionParameters: Codable, Sendable {
     var readTimeout: Int? = nil
     var originCacheControl: Bool? = nil
     var additionalCacheablePorts: [Int]? = nil
+    var vary: VaryProbe? = nil             // 2026-07-02 新增：按 Vary 响应头缓存多版本
 
     enum CodingKeys: String, CodingKey {
         case cache
@@ -72,18 +73,21 @@ nonisolated struct CacheActionParameters: Codable, Sendable {
         case readTimeout = "read_timeout"
         case originCacheControl = "origin_cache_control"
         case additionalCacheablePorts = "additional_cacheable_ports"
+        case vary
     }
 
     /// 含我们未开放的高级设置 → 编辑器只读（status_code_ttl 不计入，编辑时会原样保留）
     var hasAdvancedSettings: Bool {
         cacheKey != nil || cacheReserve != nil || readTimeout != nil
             || originCacheControl != nil || (additionalCacheablePorts?.isEmpty == false)
+            || vary != nil
     }
 }
 
 /// 仅探测存在性的占位（不还原内部结构，故含此设置的规则在 App 内只读）
 nonisolated struct CacheKeyProbe: Codable, Sendable {}
 nonisolated struct CacheReserveProbe: Codable, Sendable {}
+nonisolated struct VaryProbe: Codable, Sendable {}
 
 nonisolated struct CacheEdgeTTL: Codable, Sendable {
     var mode: String                       // respect_origin | override_origin | bypass_by_default
@@ -186,4 +190,31 @@ nonisolated struct CacheRuleToggle: Codable, Sendable {
 
 nonisolated struct CacheEntrypointUpdate: Codable, Sendable {
     let rules: [CacheRuleCreate]
+}
+
+// MARK: - 表达式常用字段
+
+/// 缓存规则表达式的常用字段，供编辑器点按插入。
+/// 含 2026-07-16 起缓存规则新支持的 bot management 分数与 ASN 匹配字段。
+nonisolated struct CacheRuleField: Identifiable, Sendable {
+    let label: String
+    let token: String
+
+    var id: String { token }
+
+    static let common: [CacheRuleField] = [
+        .init(label: String(localized: "路径"),   token: "http.request.uri.path"),
+        .init(label: String(localized: "主机"),   token: "http.host"),
+        .init(label: String(localized: "查询串"), token: "http.request.uri.query"),
+        .init(label: String(localized: "方法"),   token: "http.request.method"),
+        .init(label: "Cookie",                   token: "http.cookie"),
+        .init(label: String(localized: "国家"),   token: "ip.src.country"),
+        // 2026-07-16 新增：缓存规则现在也能按 bot 分数、JA3/JA4 指纹与来源 ASN 匹配
+        // （bot 字段需 Bot Management 订阅；ASN 全套餐可用）
+        .init(label: String(localized: "Bot 分数"),     token: "cf.bot_management.score"),
+        .init(label: String(localized: "已验证机器人"), token: "cf.bot_management.verified_bot"),
+        .init(label: String(localized: "JA3 指纹"),     token: "cf.bot_management.ja3_hash"),
+        .init(label: String(localized: "JA4 指纹"),     token: "cf.bot_management.ja4"),
+        .init(label: "ASN",                            token: "ip.src.asnum"),
+    ]
 }

@@ -4,6 +4,9 @@ import jiamin.chen.orangecloud.core.network.CfApiClient
 import jiamin.chen.orangecloud.data.model.EmailDestinationAddress
 import jiamin.chen.orangecloud.data.model.EmailDestinationCreate
 import jiamin.chen.orangecloud.data.model.EmailRoutingRule
+import jiamin.chen.orangecloud.data.model.EmailSuppression
+import jiamin.chen.orangecloud.data.model.EmailSuppressionPage
+import jiamin.chen.orangecloud.data.model.EmailSuppressionCreate
 import jiamin.chen.orangecloud.data.model.EmailRoutingRuleInput
 import jiamin.chen.orangecloud.data.model.EmailRoutingSettings
 import javax.inject.Inject
@@ -53,4 +56,24 @@ class EmailRoutingRepository @Inject constructor(
 
     suspend fun deleteAddress(accountId: String, addressId: String) =
         api.delete("accounts/$accountId/email/routing/addresses/$addressId")
+    // MARK: - 抑制列表（email-routing-suppression.read / .write）
+
+    /**
+     * 被抑制的收件地址。⚠️ 该端点 2xx 时不走 CF 标准信封：顶层是 { page, per_page, total, result }，
+     * 没有 success/errors（OpenAPI 规范如此，iOS 同款 Sentry APPLE-IOS-AB 坐实）。
+     */
+    suspend fun suppressions(zoneId: String): List<EmailSuppression> =
+        api.getBare<EmailSuppressionPage>(
+            "zones/$zoneId/email/routing/suppression",
+            listOf("per_page" to "100"),
+        ).result.orEmpty()
+
+    /** 手动抑制一个地址（此后不再向它转发） */
+    suspend fun addSuppression(zoneId: String, email: String): EmailSuppression =
+        api.post("zones/$zoneId/email/routing/suppression", EmailSuppressionCreate(email))
+
+    /** 解除抑制 */
+    suspend fun deleteSuppression(zoneId: String, id: String) =
+        api.delete("zones/$zoneId/email/routing/suppression/$id")
+
 }

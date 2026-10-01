@@ -1,7 +1,7 @@
 {
-  "versionCode": 17,
-  "versionName": "1.6.4",
+  "versionCode": 27,
+  "versionName": "2.1.3",
   "minVersionCode": 1,
   "url": "https://o-c.do/orange-cloud.apk",
-  "note": "修复：账号用量在冷启动时误显「需要流量分析权限」的问题；Worker 新建/编辑/删除已归入 Pro 会员。"
+  "note": "本次更新：Snippet 触发规则可直接增删改、启停；修复 WAF 规则开关点了没反应、多个请求同时刷新时被意外退出登录、URL 扫描提交失败、邮件抑制列表不显示；Snippet 正文未加载时禁止保存，实时日志反复进出不再失败。"
 }

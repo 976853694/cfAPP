@@ -34,6 +34,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import jiamin.chen.orangecloud.core.util.launchCustomTab
+import jiamin.chen.orangecloud.ui.dnssettings.DnsSettingsScreen
+import jiamin.chen.orangecloud.ui.managedheaders.ManagedHeadersScreen
+import jiamin.chen.orangecloud.ui.registrar.RegistrarScreen
+import jiamin.chen.orangecloud.ui.builds.WorkerBuildsScreen
+import jiamin.chen.orangecloud.ui.tracer.RequestTracerScreen
+import jiamin.chen.orangecloud.ui.urlscanner.URLScannerScreen
+import jiamin.chen.orangecloud.ui.healthcheck.HealthCheckScreen
 import jiamin.chen.orangecloud.ui.login.LoginViewModel
 import jiamin.chen.orangecloud.ui.paywall.PaywallScreen
 import jiamin.chen.orangecloud.ui.paywall.ProGateViewModel
@@ -49,9 +56,12 @@ import jiamin.chen.orangecloud.R
 import jiamin.chen.orangecloud.core.design.SkyBackground
 import jiamin.chen.orangecloud.core.design.SkyPhase
 import jiamin.chen.orangecloud.ui.analytics.ZoneAnalyticsScreen
+import jiamin.chen.orangecloud.ui.dashboard.DashboardResourceType
 import jiamin.chen.orangecloud.ui.dashboard.DashboardScreen
 import jiamin.chen.orangecloud.ui.dns.DnsListScreen
 import jiamin.chen.orangecloud.ui.network.TunnelDetailScreen
+import jiamin.chen.orangecloud.ui.turnstile.TurnstileDetailScreen
+import jiamin.chen.orangecloud.ui.turnstile.TurnstileListScreen
 import jiamin.chen.orangecloud.ui.network.TunnelListScreen
 import jiamin.chen.orangecloud.ui.paywall.ProGate
 import jiamin.chen.orangecloud.ui.waf.WafRulesScreen
@@ -103,6 +113,7 @@ import jiamin.chen.orangecloud.ui.storage.KVKeyListScreen
 import jiamin.chen.orangecloud.ui.storage.KVNamespaceListScreen
 import jiamin.chen.orangecloud.ui.storage.R2BucketListScreen
 import jiamin.chen.orangecloud.ui.storage.R2BucketSettingsScreen
+import jiamin.chen.orangecloud.ui.storage.R2SqlQueryScreen
 import jiamin.chen.orangecloud.ui.storage.R2ObjectListScreen
 import jiamin.chen.orangecloud.ui.storage.StorageHubScreen
 import jiamin.chen.orangecloud.ui.workers.WorkerCreateScreen
@@ -182,7 +193,12 @@ private object Dest {
     const val SETTINGS = "settings"
     const val IDENTITY_ROUTE = "identity/{sessionId}"
     const val TUNNELS = "tunnels"
+    const val TURNSTILE = "turnstile"
+    const val REGISTRAR = "registrar"
+    const val TRACER = "tracer"
+    const val URL_SCANNER = "urlscanner"
     const val TUNNEL_DETAIL_ROUTE = "tunnel/{tunnelId}?tunnelName={tunnelName}"
+    const val TURNSTILE_DETAIL_ROUTE = "turnstile/{sitekey}"
     const val STATUS = "status"
     const val AUDIT = "audit"
     const val ALERTING = "alerting"
@@ -199,6 +215,7 @@ private object Dest {
     const val R2_BUCKETS = "r2/buckets"
     const val R2_OBJECTS_ROUTE = "r2/objects/{bucket}"
     const val R2_BUCKET_SETTINGS_ROUTE = "r2/settings/{bucket}"
+    const val R2_SQL_ROUTE = "r2/sql/{bucket}"
     const val D1_DATABASES = "d1/databases"
     const val D1_QUERY_ROUTE = "d1/query/{dbId}?dbName={dbName}"
     const val D1_TABLE_ROUTE = "d1/table/{dbId}?table={table}"
@@ -219,6 +236,9 @@ private object Dest {
     const val RATE_LIMIT_ROUTE = "ratelimit/{zoneId}?zoneName={zoneName}"
     const val EMAIL_ROUTE = "email/{zoneId}?zoneName={zoneName}"
     const val LOAD_BALANCER_ROUTE = "loadbalancer/{zoneId}?zoneName={zoneName}"
+    const val HEALTHCHECK_ROUTE = "healthcheck/{zoneId}?zoneName={zoneName}"
+    const val DNS_SETTINGS_ROUTE = "dnssettings/{zoneId}?zoneName={zoneName}"
+    const val MANAGED_HEADERS_ROUTE = "managedheaders/{zoneId}?zoneName={zoneName}"
     const val LB_POOLS = "lb/pools"
     const val LB_MONITORS = "lb/monitors"
     const val WORKER_ROUTE = "worker/{scriptName}"
@@ -227,6 +247,7 @@ private object Dest {
     const val WORKER_TRIGGERS_ROUTE = "worker/{scriptName}/triggers"
     const val WORKER_DOMAINS_ROUTE = "worker/{scriptName}/domains"
     const val WORKER_DEPLOYMENTS_ROUTE = "worker/{scriptName}/deployments"
+    const val WORKER_BUILDS_ROUTE = "worker/{scriptName}/builds"
     const val TAIL_ROUTE = "tail/{scriptName}"
     private fun zoneScoped(prefix: String, zoneId: String, zoneName: String) =
         "$prefix/$zoneId?zoneName=${Uri.encode(zoneName)}"
@@ -245,6 +266,9 @@ private object Dest {
     fun rateLimit(zoneId: String, zoneName: String) = zoneScoped("ratelimit", zoneId, zoneName)
     fun email(zoneId: String, zoneName: String) = zoneScoped("email", zoneId, zoneName)
     fun loadBalancer(zoneId: String, zoneName: String) = zoneScoped("loadbalancer", zoneId, zoneName)
+    fun healthCheck(zoneId: String, zoneName: String) = zoneScoped("healthcheck", zoneId, zoneName)
+    fun dnsSettings(zoneId: String, zoneName: String) = zoneScoped("dnssettings", zoneId, zoneName)
+    fun managedHeaders(zoneId: String, zoneName: String) = zoneScoped("managedheaders", zoneId, zoneName)
     fun snippetEdit(zoneId: String, zoneName: String, name: String) =
         "snippetEdit/$zoneId?zoneName=${Uri.encode(zoneName)}&name=${Uri.encode(name)}"
     fun redirectItems(listId: String, listName: String): String = "redirects/$listId?listName=${Uri.encode(listName)}"
@@ -253,15 +277,18 @@ private object Dest {
         "dev/ai/run/${Uri.encode(model)}?task=${Uri.encode(task)}&desc=${Uri.encode(desc)}"
     fun identity(sessionId: String): String = "identity/${Uri.encode(sessionId)}"
     fun tunnelDetail(id: String, name: String): String = "tunnel/$id?tunnelName=${Uri.encode(name)}"
+    fun turnstileDetail(sitekey: String): String = "turnstile/$sitekey"
     fun worker(scriptName: String): String = "worker/${Uri.encode(scriptName)}"
     fun workerEdit(scriptName: String): String = "worker_edit/${Uri.encode(scriptName)}"
     fun workerSecrets(scriptName: String): String = "worker/${Uri.encode(scriptName)}/secrets"
     fun workerTriggers(scriptName: String): String = "worker/${Uri.encode(scriptName)}/triggers"
     fun workerDomains(scriptName: String): String = "worker/${Uri.encode(scriptName)}/domains"
     fun workerDeployments(scriptName: String): String = "worker/${Uri.encode(scriptName)}/deployments"
+    fun workerBuilds(scriptName: String): String = "worker/${Uri.encode(scriptName)}/builds"
     fun tail(scriptName: String): String = "tail/${Uri.encode(scriptName)}"
     fun r2Objects(bucket: String): String = "r2/objects/${Uri.encode(bucket)}"
     fun r2Settings(bucket: String): String = "r2/settings/${Uri.encode(bucket)}"
+    fun r2Sql(bucket: String): String = "r2/sql/${Uri.encode(bucket)}"
     fun d1Query(dbId: String, dbName: String): String = "d1/query/$dbId?dbName=${Uri.encode(dbName)}"
     fun d1Table(dbId: String, table: String): String = "d1/table/$dbId?table=${Uri.encode(table)}"
     fun kvKeys(nsId: String, nsTitle: String): String = "kv/keys/$nsId?nsTitle=${Uri.encode(nsTitle)}"
@@ -269,6 +296,7 @@ private object Dest {
     /** 路由 → 高亮的顶级标签（下钻页归属其父标签）。 */
     fun topOf(route: String?): TopDestination = when {
         route == DASHBOARD || route == TUNNELS || route?.startsWith("tunnel/") == true ||
+        route == TURNSTILE || route?.startsWith("turnstile/") == true ||
             route == REDIRECTS || route?.startsWith("redirects/") == true ||
             route?.startsWith("zerotrust") == true -> TopDestination.Dashboard
         route == SETTINGS || route == STATUS || route == AUDIT || route == ALERTING || route?.startsWith("identity/") == true -> TopDestination.Settings
@@ -329,8 +357,30 @@ private fun MainScaffold(onOpenToolbox: () -> Unit) {
             ZoneTool.RATE_LIMIT -> Dest.rateLimit(zoneId, zoneName)
             ZoneTool.EMAIL_ROUTING -> Dest.email(zoneId, zoneName)
             ZoneTool.LOAD_BALANCER -> Dest.loadBalancer(zoneId, zoneName)
+            ZoneTool.HEALTH_CHECK -> Dest.healthCheck(zoneId, zoneName)
+            ZoneTool.DNS_SETTINGS -> Dest.dnsSettings(zoneId, zoneName)
+            ZoneTool.MANAGED_HEADERS -> Dest.managedHeaders(zoneId, zoneName)
         }
         route?.let { navController.navigate(it) }
+    }
+
+    // Dashboard 置顶 / 命令搜索 / 告警的统一跳转：六类资源 → 已有 Dest（不另造路由体系）。
+    // title 用于 zone/D1/KV/隧道 这些「路由带展示名」的页面，取自当前目录的现查名称。
+    val openResource: (DashboardResourceType, String, String) -> Unit = { type, id, title ->
+        val route = when (type) {
+            DashboardResourceType.ZONE -> Dest.zoneDetail(id, title)
+            DashboardResourceType.WORKER -> Dest.worker(id)
+            DashboardResourceType.R2_BUCKET -> Dest.r2Objects(id)
+            DashboardResourceType.D1_DATABASE -> Dest.d1Query(id, title)
+            DashboardResourceType.KV_NAMESPACE -> Dest.kvKeys(id, title)
+            DashboardResourceType.TUNNEL -> Dest.tunnelDetail(id, title)
+        }
+        // 存储三类的下钻页平时只能从「存储」Tab（整页 Pro 闸门）进入，
+        // 这里直达会绕过闸门，故非 Pro 直接送付费墙；隧道详情路由自带 ProGate。
+        val needsPro = type == DashboardResourceType.R2_BUCKET ||
+            type == DashboardResourceType.D1_DATABASE ||
+            type == DashboardResourceType.KV_NAMESPACE
+        navController.navigate(if (needsPro && !isPro) Dest.PAYWALL else route)
     }
 
     NavigationSuiteScaffold(
@@ -356,6 +406,10 @@ private fun MainScaffold(onOpenToolbox: () -> Unit) {
             composable(Dest.DASHBOARD) {
                 DashboardScreen(
                     onOpenTunnels = { navController.navigate(Dest.TUNNELS) },
+                    onOpenTurnstile = { navController.navigate(Dest.TURNSTILE) },
+                    onOpenRegistrar = { navController.navigate(Dest.REGISTRAR) },
+                    onOpenTracer = { navController.navigate(Dest.TRACER) },
+                    onOpenUrlScanner = { navController.navigate(Dest.URL_SCANNER) },
                     onOpenZones = {
                         navController.navigate(Dest.ZONES) {
                             popUpTo(navController.graph.findStartDestination().id) { saveState = true }
@@ -367,6 +421,7 @@ private fun MainScaffold(onOpenToolbox: () -> Unit) {
                     onAddAccount = onAddAccount,
                     onOpenRedirects = { navController.navigate(Dest.REDIRECTS) },
                     onOpenZeroTrust = { navController.navigate(Dest.ZERO_TRUST) },
+                    onOpenResource = openResource,
                 )
             }
             composable(Dest.ZERO_TRUST) {
@@ -416,6 +471,15 @@ private fun MainScaffold(onOpenToolbox: () -> Unit) {
             composable(Dest.PAYWALL) {
                 PaywallScreen()
             }
+            composable(Dest.URL_SCANNER) {
+                URLScannerScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Dest.TRACER) {
+                RequestTracerScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Dest.REGISTRAR) {
+                RegistrarScreen(onBack = { navController.popBackStack() })
+            }
             composable(Dest.TUNNELS) {
                 ProGate {
                     TunnelListScreen(
@@ -432,6 +496,20 @@ private fun MainScaffold(onOpenToolbox: () -> Unit) {
                 ),
             ) {
                 ProGate { TunnelDetailScreen(onBack = { navController.popBackStack() }) }
+            }
+            composable(Dest.TURNSTILE) {
+                ProGate {
+                    TurnstileListScreen(
+                        onBack = { navController.popBackStack() },
+                        onOpenWidget = { sitekey -> navController.navigate(Dest.turnstileDetail(sitekey)) },
+                    )
+                }
+            }
+            composable(
+                route = Dest.TURNSTILE_DETAIL_ROUTE,
+                arguments = listOf(navArgument("sitekey") { type = NavType.StringType }),
+            ) {
+                ProGate { TurnstileDetailScreen(onBack = { navController.popBackStack() }) }
             }
             composable(
                 Dest.ZONES,
@@ -497,6 +575,24 @@ private fun MainScaffold(onOpenToolbox: () -> Unit) {
                 arguments = zoneArgs(),
             ) {
                 EmailRoutingScreen(onBack = { navController.popBackStack() })
+            }
+            composable(
+                route = Dest.HEALTHCHECK_ROUTE,
+                arguments = zoneArgs(),
+            ) {
+                HealthCheckScreen(onBack = { navController.popBackStack() })
+            }
+            composable(
+                route = Dest.DNS_SETTINGS_ROUTE,
+                arguments = zoneArgs(),
+            ) {
+                DnsSettingsScreen(onBack = { navController.popBackStack() })
+            }
+            composable(
+                route = Dest.MANAGED_HEADERS_ROUTE,
+                arguments = zoneArgs(),
+            ) {
+                ManagedHeadersScreen(onBack = { navController.popBackStack() })
             }
             composable(
                 route = Dest.LOAD_BALANCER_ROUTE,
@@ -689,6 +785,7 @@ private fun MainScaffold(onOpenToolbox: () -> Unit) {
                     onOpenTriggers = { navController.navigate(Dest.workerTriggers(scriptName)) },
                     onOpenDomains = { navController.navigate(Dest.workerDomains(scriptName)) },
                     onOpenDeployments = { navController.navigate(Dest.workerDeployments(scriptName)) },
+                    onOpenBuilds = { navController.navigate(Dest.workerBuilds(scriptName)) },
                     onEditCode = { navController.navigate(Dest.workerEdit(scriptName)) },
                     // 查看详情免费；删除按 isPro 拦到付费墙（编辑/新建走各自路由的 ProGate）
                     isPro = isPro,
@@ -718,6 +815,12 @@ private fun MainScaffold(onOpenToolbox: () -> Unit) {
                 arguments = listOf(navArgument("scriptName") { type = NavType.StringType }),
             ) {
                 ProGate { WorkerDeploymentsScreen(onBack = { navController.popBackStack() }) }
+            }
+            composable(
+                route = Dest.WORKER_BUILDS_ROUTE,
+                arguments = listOf(navArgument("scriptName") { type = NavType.StringType }),
+            ) {
+                WorkerBuildsScreen(onBack = { navController.popBackStack() })
             }
             composable(
                 route = Dest.TAIL_ROUTE,
@@ -757,7 +860,16 @@ private fun MainScaffold(onOpenToolbox: () -> Unit) {
                 route = Dest.R2_BUCKET_SETTINGS_ROUTE,
                 arguments = listOf(navArgument("bucket") { type = NavType.StringType }),
             ) {
-                R2BucketSettingsScreen(onBack = { navController.popBackStack() })
+                R2BucketSettingsScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenSql = { bucket -> navController.navigate(Dest.r2Sql(bucket)) },
+                )
+            }
+            composable(
+                route = Dest.R2_SQL_ROUTE,
+                arguments = listOf(navArgument("bucket") { type = NavType.StringType }),
+            ) {
+                R2SqlQueryScreen(onBack = { navController.popBackStack() })
             }
             composable(Dest.D1_DATABASES) {
                 D1DatabaseListScreen(

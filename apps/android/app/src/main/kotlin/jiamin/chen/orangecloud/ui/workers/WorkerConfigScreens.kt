@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -126,6 +127,7 @@ fun WorkerSecretsScreen(
     // sheet: null = closed; "secret" = new secret; "var:" + name = edit/new variable
     var sheet by remember { mutableStateOf<EditorTarget?>(null) }
     var showBindSheet by remember { mutableStateOf(false) }
+    var showBulkSheet by remember { mutableStateOf(false) }
 
     SkyBackground(phase = phase) {
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
@@ -157,6 +159,7 @@ fun WorkerSecretsScreen(
                         )
                     }
                     if (state.canWrite) AddInlineButton(stringResource(R.string.worker_secrets_add)) { sheet = EditorTarget.NewSecret }
+                    if (state.canWrite) AddInlineButton(stringResource(R.string.worker_bulk_import)) { showBulkSheet = true }
                 }
 
                 // 环境变量
@@ -232,6 +235,16 @@ fun WorkerSecretsScreen(
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             onSubmit = { resource -> viewModel.bindResource(resource); showBindSheet = false },
             onDismiss = { showBindSheet = false },
+        )
+    }
+
+    if (showBulkSheet) {
+        WorkerBulkImportSheet(
+            isSaving = state.isSaving,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            onImportVariables = { pairs -> viewModel.bulkImportVariables(pairs) { showBulkSheet = false } },
+            onImportSecrets = { pairs -> viewModel.bulkImportSecrets(pairs) { showBulkSheet = false } },
+            onDismiss = { showBulkSheet = false },
         )
     }
 }
@@ -318,9 +331,11 @@ private fun WorkerBindResourceSheet(
 ) {
     val kvKind = "kv"
     val d1Kind = "d1"
+    val r2Kind = "r2"
     val availableKinds = buildList {
         if (state.canReadKV) add(kvKind)
         if (state.canReadD1) add(d1Kind)
+        if (state.canReadR2) add(r2Kind)
     }
     var kind by remember { mutableStateOf(availableKinds.firstOrNull() ?: kvKind) }
     var selectedId by remember { mutableStateOf("") }
@@ -328,10 +343,11 @@ private fun WorkerBindResourceSheet(
     var nameEdited by remember { mutableStateOf(false) }
     var resourceExpanded by remember { mutableStateOf(false) }
 
-    val options: List<Pair<String, String>> = if (kind == kvKind) {
-        state.kvNamespaces.map { it.id to it.title }
-    } else {
-        state.d1Databases.map { it.uuid to it.name }
+    // R2 按桶名引用，故 id 即桶名
+    val options: List<Pair<String, String>> = when (kind) {
+        kvKind -> state.kvNamespaces.map { it.id to it.title }
+        d1Kind -> state.d1Databases.map { it.uuid to it.name }
+        else -> state.r2Buckets.map { it.name to it.name }
     }
     val selectedTitle = options.firstOrNull { it.first == selectedId }?.second
 
@@ -364,7 +380,7 @@ private fun WorkerBindResourceSheet(
                             else
                                 ButtonDefaults.outlinedButtonColors(),
                             modifier = Modifier.weight(1f),
-                        ) { Text(if (k == kvKind) "KV" else "D1") }
+                        ) { Text(when (k) { kvKind -> "KV"; d1Kind -> "D1"; else -> "R2" }) }
                     }
                 }
             }
@@ -378,7 +394,13 @@ private fun WorkerBindResourceSheet(
                 }
             } else if (options.isEmpty()) {
                 Text(
-                    stringResource(if (kind == kvKind) R.string.worker_bind_no_kv else R.string.worker_bind_no_d1),
+                    stringResource(
+                        when (kind) {
+                            kvKind -> R.string.worker_bind_no_kv
+                            d1Kind -> R.string.worker_bind_no_d1
+                            else -> R.string.worker_bind_no_r2
+                        }
+                    ),
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
@@ -387,7 +409,17 @@ private fun WorkerBindResourceSheet(
                         value = selectedTitle ?: stringResource(R.string.worker_bind_pick),
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text(stringResource(if (kind == kvKind) R.string.worker_bind_kv_ns else R.string.worker_bind_d1_db)) },
+                        label = {
+                            Text(
+                                stringResource(
+                                    when (kind) {
+                                        kvKind -> R.string.worker_bind_kv_ns
+                                        d1Kind -> R.string.worker_bind_d1_db
+                                        else -> R.string.worker_bind_r2_bucket
+                                    }
+                                )
+                            )
+                        },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resourceExpanded) },
                         modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
                     )
@@ -424,10 +456,11 @@ private fun WorkerBindResourceSheet(
 
             Button(
                 onClick = {
-                    val resource = if (kind == kvKind)
-                        WorkerBindingInput.kv(name.trim(), selectedId)
-                    else
-                        WorkerBindingInput.d1(name.trim(), selectedId)
+                    val resource = when (kind) {
+                        kvKind -> WorkerBindingInput.kv(name.trim(), selectedId)
+                        d1Kind -> WorkerBindingInput.d1(name.trim(), selectedId)
+                        else -> WorkerBindingInput.r2(name.trim(), selectedId)
+                    }
                     onSubmit(resource)
                 },
                 enabled = canSave,
@@ -850,6 +883,87 @@ private fun RouteEditorSheet(
                     Spacer(Modifier.width(8.dp))
                 }
                 Text(stringResource(R.string.dns_save))
+            }
+        }
+    }
+}
+
+
+// MARK: - 批量导入 JSON（变量走 PATCH settings 原子；密钥走 secrets-bulk 原子）
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WorkerBulkImportSheet(
+    isSaving: Boolean,
+    sheetState: androidx.compose.material3.SheetState,
+    onImportVariables: (List<Pair<String, String>>) -> Unit,
+    onImportSecrets: (List<Pair<String, String>>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var asSecret by remember { mutableStateOf(false) }
+    var jsonText by remember { mutableStateOf("") }
+
+    // 解析一个扁平 JSON 对象为 (name, value) 列表；键须符合环境变量命名，值取字符串/数字/布尔
+    val parsed: Result<List<Pair<String, String>>> = remember(jsonText) {
+        runCatching {
+            val trimmed = jsonText.trim()
+            if (trimmed.isEmpty()) return@runCatching emptyList()
+            val obj = org.json.JSONObject(trimmed)
+            val keyPattern = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
+            val pairs = mutableListOf<Pair<String, String>>()
+            for (key in obj.keys()) {
+                require(keyPattern.matches(key)) { "invalid key: $key" }
+                val raw = obj.get(key)
+                require(raw is String || raw is Number || raw is Boolean) { "invalid value for $key" }
+                pairs += key to raw.toString()
+            }
+            pairs.sortedBy { it.first }
+        }
+    }
+    val pairs = parsed.getOrDefault(emptyList())
+    val hasInput = jsonText.isNotBlank()
+    val canImport = pairs.isNotEmpty() && !isSaving
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(horizontal = 24.dp).padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(stringResource(R.string.worker_bulk_import), fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = !asSecret, onClick = { asSecret = false }, label = { Text(stringResource(R.string.worker_vars_section)) })
+                FilterChip(selected = asSecret, onClick = { asSecret = true }, label = { Text(stringResource(R.string.worker_secrets_section)) })
+            }
+            Text(
+                stringResource(if (asSecret) R.string.worker_bulk_secret_hint else R.string.worker_bulk_var_hint),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = jsonText,
+                onValueChange = { jsonText = it },
+                label = { Text("JSON") },
+                placeholder = { Text("{\n  \"API_KEY\": \"abc123\",\n  \"MAX_RETRY\": 3\n}") },
+                minLines = 5,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (hasInput && parsed.isFailure) {
+                Text(stringResource(R.string.worker_bulk_invalid), fontSize = 12.sp, color = Color(0xFFE5484D))
+            } else if (pairs.isNotEmpty()) {
+                Text(stringResource(R.string.worker_bulk_count, pairs.size), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Button(
+                onClick = { if (asSecret) onImportSecrets(pairs) else onImportVariables(pairs) },
+                enabled = canImport,
+                colors = ButtonDefaults.buttonColors(containerColor = OcOrange, contentColor = Color.White),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (isSaving) {
+                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                } else {
+                    Text(stringResource(R.string.worker_bulk_do_import), fontWeight = FontWeight.SemiBold)
+                }
             }
         }
     }

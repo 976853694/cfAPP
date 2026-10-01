@@ -17,6 +17,9 @@ nonisolated enum AuthError: LocalizedError {
     case invalidCallback
     case stateMismatch
     case oauthError(String)
+    /// 授权页被回退 / 刷新后再回到回调，Hydra 判定 consent verifier 已被消费。
+    /// 一次性状态，重来即可，不是配置问题（Sentry APPLE-IOS-5）。
+    case consentExpired
     case tokenExchangeFailed(String)
     /// token 端点返回非 2xx。status 用于区分「刷新令牌确已失效」（400）与瞬时错误（5xx/429）。
     case tokenEndpointError(status: Int, body: String)
@@ -27,10 +30,19 @@ nonisolated enum AuthError: LocalizedError {
         case .invalidCallback:              return String(localized: "授权回调格式错误")
         case .stateMismatch:                return String(localized: "state 校验失败，请重试")
         case .oauthError(let message):      return message
+        case .consentExpired:               return String(localized: "授权页面已失效，请重新发起登录。")
         case .tokenExchangeFailed(let msg): return String(localized: "换取 Token 失败：\(msg)")
         case .tokenEndpointError(let status, let body):
             return String(localized: "换取 Token 失败：\(body.isEmpty ? "HTTP \(status)" : body)")
         case .notLoggedIn:                  return String(localized: "登录已过期，请重新登录")
+        }
+    }
+
+    /// 授权流里「重来一次就好」的一次性状态：计入本地日志，但不该占遥测的故障额度。
+    var isRetriableFlowState: Bool {
+        switch self {
+        case .consentExpired, .stateMismatch: return true
+        default:                              return false
         }
     }
 }
@@ -212,6 +224,10 @@ final class AuthManager {
         } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
             // 用户主动取消，不算错误
             AppLog.auth.notice("login canceled by user")
+        } catch let error as AuthError where error.isRetriableFlowState {
+            // 用户重来一次就好，不是故障：记 notice 不进遥测
+            AppLog.auth.notice("login aborted (retriable): \(error.localizedDescription)")
+            errorMessage = error.localizedDescription
         } catch {
             AppLog.auth.error("login failed: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
@@ -253,6 +269,9 @@ final class AuthManager {
             persist()
         } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
             AppLog.auth.notice("reauthorize canceled by user")
+        } catch let error as AuthError where error.isRetriableFlowState {
+            AppLog.auth.notice("reauthorize aborted (retriable): \(error.localizedDescription)")
+            errorMessage = error.localizedDescription
         } catch {
             AppLog.auth.error("reauthorize failed: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
@@ -345,6 +364,11 @@ final class AuthManager {
                 var message = String(localized: "授权请求包含 Cloudflare 尚未对本 App 开放的权限，无法完成登录。请更新到最新版本后重试。")
                 if !description.isEmpty { message += "\n\(description)" }
                 throw AuthError.oauthError(message)
+            }
+            // Hydra 的一次性 consent verifier 被重复消费（授权途中后退 / 刷新过），
+            // 重新走一遍即可——别把英文原文甩给用户（Sentry APPLE-IOS-5 占登录失败大头）。
+            if description.contains("consent verifier has already been used") {
+                throw AuthError.consentExpired
             }
             throw AuthError.oauthError(description.isEmpty ? error : "\(error): \(description)")
         }
@@ -485,8 +509,8 @@ final class AuthManager {
 
         do {
             return try await requestAndStoreRefresh(sessionId: sessionId, refreshToken: refreshToken, previousScope: stored.scope)
-        } catch let AuthError.tokenEndpointError(status, _) where (400...403).contains(status) {
-            // token 端点 4xx = 服务端明确拒绝该刷新令牌。先看是否被别的进程轮换走了：
+        } catch let AuthError.tokenEndpointError(status, body) where (400...403).contains(status) && Self.isOAuthErrorBody(body) {
+            // token 端点 4xx **且带 OAuth 错误体** = 服务端明确拒绝该刷新令牌。先看是否被别的进程轮换走了：
             // 钥匙串里若已出现不同的 refresh token，用它重试一次（多账号 / 扩展并发下的良性竞态）。
             if let latest = TokenStore.load(sessionId: sessionId),
                let rotated = latest.refreshToken, rotated != refreshToken,
@@ -500,6 +524,16 @@ final class AuthManager {
             throw AuthError.notLoggedIn
         }
         // 其它错误（网络 / 超时 / 5xx / 429）：保留身份，原样向上抛出
+    }
+
+    /// token 端点的 4xx 只有带 OAuth 错误体（{"error":"invalid_grant",…}）才算「服务端明确拒绝该刷新令牌」。
+    /// WAF 挑战页 / 强制门户 / 运营商劫持返回的 403 HTML 同样落在 400...403，但那是网络层问题：
+    /// 不能据此删钥匙串把用户踢回登录页（后台刷新每 4h 一次，误判一次就丢掉仍有效的 refresh token）。
+    /// 非 OAuth 错误体的 4xx 与网络错误同待遇：保留身份、原样上抛。
+    nonisolated static func isOAuthErrorBody(_ body: String) -> Bool {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return object["error"] is String
     }
 
     /// 用给定 refresh token 向 token 端点换新令牌、写回钥匙串并返回新 access token。
@@ -543,6 +577,13 @@ final class AuthManager {
         }
     }
 
+    // MARK: - 身份级偏好键
+
+    /// 该身份「默认进入的账号」的 UserDefaults 键（SessionStore 读写，身份移除时清）
+    nonisolated static func defaultAccountKey(_ sessionId: UUID) -> String {
+        "defaultAccountId_\(sessionId.uuidString)"
+    }
+
     // MARK: - 退出单个身份
 
     func logout(sessionId: UUID, revoke: Bool = true) async {
@@ -576,6 +617,8 @@ final class AuthManager {
         TokenStore.clear(sessionId: id)
         AuthDiagnostics.clearBaseline(id)
         sessionsNeedingReauth.remove(id)
+        // 该身份记住的默认账号一并清掉，重新登录不带上一轮的选择
+        UserDefaults.standard.removeObject(forKey: Self.defaultAccountKey(id))
         sessions.removeAll { $0.id == id }
         AppLog.auth.notice("session removed=\(id.uuidString) remaining=\(sessions.count)")
         if currentSessionId == id {

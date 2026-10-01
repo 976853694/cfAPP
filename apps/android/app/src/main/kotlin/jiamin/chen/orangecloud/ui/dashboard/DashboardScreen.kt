@@ -24,12 +24,17 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.TravelExplore
+import androidx.compose.material.icons.outlined.Troubleshoot
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -64,11 +69,16 @@ import jiamin.chen.orangecloud.data.model.Zone
 @Composable
 fun DashboardScreen(
     onOpenTunnels: () -> Unit,
+    onOpenTurnstile: () -> Unit,
+    onOpenRegistrar: () -> Unit,
+    onOpenTracer: () -> Unit,
+    onOpenUrlScanner: () -> Unit,
     onOpenZones: () -> Unit,
     onOpenZone: (Zone) -> Unit,
     onAddAccount: () -> Unit,
     onOpenRedirects: () -> Unit = {},
     onOpenZeroTrust: () -> Unit = {},
+    onOpenResource: (DashboardResourceType, String, String) -> Unit = { _, _, _ -> },
     viewModel: DashboardViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -76,6 +86,8 @@ fun DashboardScreen(
     val onSky = phase.onSky
     val cs = MaterialTheme.colorScheme
     var menuOpen by remember { mutableStateOf(false) }
+    var searchOpen by remember { mutableStateOf(false) }
+    val openResource: (DashboardResource) -> Unit = { res -> onOpenResource(res.type, res.id, res.title) }
 
     SkyBackground(phase = phase) {
         Box(Modifier.fillMaxSize()) {
@@ -92,6 +104,15 @@ fun DashboardScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Spacer(Modifier.weight(1f))
+                    // 命令搜索入口：打开时兜底触发一次目录补拉（首屏那次若失败/未跑完，这里补上）
+                    IconButton(onClick = { searchOpen = true; viewModel.ensureCatalog() }) {
+                        Icon(
+                            Icons.Outlined.Search,
+                            contentDescription = stringResource(R.string.hub_search),
+                            tint = onSky,
+                        )
+                    }
+                    Spacer(Modifier.width(4.dp))
                     Box(
                         Modifier.size(40.dp).clickable { menuOpen = true },
                         contentAlignment = Alignment.Center,
@@ -136,6 +157,9 @@ fun DashboardScreen(
                     }
                 }
 
+                // 已固定（跨资源类型置顶，横滑 chip）
+                PinnedResourceRow(pinned = state.pinned, onSky = onSky, onOpen = openResource)
+
                 // 用量模块（账号级 Workers/R2/D1/KV 用量，环形仪表 + 点开明细）
                 Spacer(Modifier.height(26.dp))
                 DashboardUsageSection(
@@ -145,12 +169,16 @@ fun DashboardScreen(
                     loadFailed = state.usageLoadFailed,
                     hasScope = state.hasAccountAnalytics,
                     unavailable = state.accountAnalyticsUnavailable,
+                    partial = state.accountAnalyticsPartial,
                     onSky = onSky,
                     onRetry = { viewModel.loadUsage(force = true) },
                     onSetWorkersPaid = { viewModel.setUsageWorkersPaid(it) },
                     onSetR2Paid = { viewModel.setUsageR2Paid(it) },
                     onSetBillingDay = { viewModel.setUsageBillingDay(it) },
                 )
+
+                // 告警中心（域名未激活 / 隧道异常 / 无 Worker，全部正常显示「暂无告警」）
+                AlertCenterCard(alerts = state.alerts, onSky = onSky, onOpen = openResource)
 
                 // 最近访问
                 Row(
@@ -194,9 +222,24 @@ fun DashboardScreen(
                 ) {
                     QuickAction(Icons.Outlined.Refresh, stringResource(R.string.dash_refresh)) { viewModel.refresh() }
                     QuickAction(Icons.Outlined.Hub, stringResource(R.string.tunnel_title), onOpenTunnels)
+                    QuickAction(Icons.Outlined.Shield, stringResource(R.string.ts_title), onOpenTurnstile)
+                    QuickAction(Icons.Outlined.VerifiedUser, stringResource(R.string.reg_title), onOpenRegistrar)
+                    QuickAction(Icons.Outlined.Troubleshoot, stringResource(R.string.trace_title), onOpenTracer)
+                    QuickAction(Icons.Outlined.TravelExplore, stringResource(R.string.urls_title), onOpenUrlScanner)
                     QuickAction(Icons.Outlined.Link, stringResource(R.string.redirect_title), onOpenRedirects)
                     QuickAction(Icons.Outlined.VerifiedUser, stringResource(R.string.zt_title), onOpenZeroTrust)
                 }
+            }
+
+            if (searchOpen) {
+                ResourceSearchSheet(
+                    resources = state.resources,
+                    pinnedKeys = remember(state.pinned) { state.pinned.map { it.pinKey }.toSet() },
+                    loading = state.catalogLoading,
+                    onOpen = { res -> searchOpen = false; openResource(res) },
+                    onTogglePin = { res -> viewModel.togglePin(res) },
+                    onDismiss = { searchOpen = false },
+                )
             }
 
             if (menuOpen) {
@@ -273,47 +316,56 @@ private fun AccountMenu(
             shadowElevation = 6.dp,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = 96.dp, end = 12.dp)
-                .width(264.dp),
+                // bottom padding 把菜单高度封在屏幕内——否则账号一多就被底部裁掉（issue #71）
+                .padding(top = 96.dp, end = 12.dp, bottom = 24.dp)
+                .width(276.dp),
         ) {
             Column(Modifier.padding(8.dp)) {
-                if (sessions.size > 1) {
+                // 身份 + 账号列表内滚动（高度已被上面的 padding 封顶），
+                // 「添加账号」留在滚动区外固定在底部，账号再多也点得到
+                Column(
+                    Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    if (sessions.size > 1) {
+                        Text(
+                            stringResource(R.string.dash_switch_identity),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = cs.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 6.dp),
+                        )
+                        sessions.forEach { session ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable { onPickSession(session.id) }.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                ZoneAvatar(session.label, size = 38.dp)
+                                Spacer(Modifier.width(12.dp))
+                                Text(session.label, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = cs.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                if (session.id == currentSessionId) Icon(Icons.Outlined.Check, contentDescription = null, tint = cs.primary, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp).height(1.dp).background(cs.outlineVariant))
+                    }
                     Text(
-                        stringResource(R.string.dash_switch_identity),
+                        stringResource(R.string.dash_switch_account),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                         color = cs.onSurfaceVariant,
                         modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 6.dp),
                     )
-                    sessions.forEach { session ->
+                    accounts.forEach { account ->
                         Row(
-                            Modifier.fillMaxWidth().clickable { onPickSession(session.id) }.padding(10.dp),
+                            Modifier.fillMaxWidth().clickable { onPick(account.id) }.padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            ZoneAvatar(session.label, size = 38.dp)
+                            ZoneAvatar(account.name, size = 38.dp)
                             Spacer(Modifier.width(12.dp))
-                            Text(session.label, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                            if (session.id == currentSessionId) Icon(Icons.Outlined.Check, contentDescription = null, tint = cs.primary, modifier = Modifier.size(18.dp))
+                            Text(account.name, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = cs.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            if (account.id == currentId) Icon(Icons.Outlined.Check, contentDescription = null, tint = cs.primary, modifier = Modifier.size(18.dp))
                         }
-                    }
-                    Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp).height(1.dp).background(cs.outlineVariant))
-                }
-                Text(
-                    stringResource(R.string.dash_switch_account),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = cs.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 6.dp),
-                )
-                accounts.forEach { account ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { onPick(account.id) }.padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        ZoneAvatar(account.name, size = 38.dp)
-                        Spacer(Modifier.width(12.dp))
-                        Text(account.name, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = cs.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                        if (account.id == currentId) Icon(Icons.Outlined.Check, contentDescription = null, tint = cs.primary, modifier = Modifier.size(18.dp))
                     }
                 }
                 Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp).height(1.dp).background(cs.outlineVariant))

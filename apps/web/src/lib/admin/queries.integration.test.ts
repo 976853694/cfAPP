@@ -1,7 +1,7 @@
 // loadAdminStats 的真实 SQL 集成测试（node:sqlite）：混入 Production / Sandbox 行，
 // 断言所有聚合都把 Sandbox 排除，并验证跨币种 USD 归一。
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { beforeAll, describe, expect, it } from "vitest";
 import { loadAdminStats } from "./queries";
@@ -30,7 +30,13 @@ class FakeD1 {
 	}
 }
 
-const schema = readFileSync(new URL("../../../migrations/0001_init.sql", import.meta.url), "utf8");
+// 全量 migration（含 0007 的 platform 列），保持与生产表结构一致。
+const migDir = new URL("../../../migrations/", import.meta.url);
+const schema = readdirSync(migDir)
+	.filter((f) => f.endsWith(".sql"))
+	.sort()
+	.map((f) => readFileSync(new URL(f, migDir), "utf8"))
+	.join("\n");
 let db: FakeD1;
 const PD = Date.now() - 2 * 86_400_000; // 两天前，落在近 30 天 / 本月窗口内
 
@@ -77,5 +83,45 @@ describe("loadAdminStats 排除 Sandbox", () => {
 		expect(s.transactions.map((t) => t.transaction_id)).not.toContain("tS");
 		const active = s.statusBreakdown.find((x) => x.key === "active");
 		expect(active?.value).toBe(3);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Play 宽限期：订单有金额但钱没到账，不能算收入
+// ---------------------------------------------------------------------------
+
+describe("loadAdminStats 排除未到账订单", () => {
+	let db2: FakeD1;
+
+	beforeAll(() => {
+		const raw = new DatabaseSync(":memory:");
+		raw.exec(schema);
+		// g1 = 宽限期续订（orders.get state=PENDING，钱没到账）
+		// g2 = 已扣款成功的续订
+		// g3 = 扣款前被取消的订单
+		raw.exec(`
+			INSERT INTO transactions (transaction_id, original_transaction_id, type, environment, price_millis, currency, purchase_date, created_at, updated_at, platform, order_state) VALUES
+			 ('g1','tok1','Auto-Renewable Subscription','Production',6319000,'HUF',${PD},${PD},${PD},'play','PENDING'),
+			 ('g2','tok2','Auto-Renewable Subscription','Production',19990,'USD',${PD},${PD},${PD},'play','PROCESSED'),
+			 ('g3','tok3','Auto-Renewable Subscription','Production',19990,'USD',${PD},${PD},${PD},'play','CANCELED'),
+			 ('g4','tok4','Non-Consumable','Production',49990,'USD',${PD},${PD},${PD},'play','PENDING');
+		`);
+		db2 = new FakeD1(raw);
+	});
+
+	it("PENDING / CANCELED 的订单不计入营收", async () => {
+		const s = await loadAdminStats(db2 as never);
+		expect(s.kpis.cumulativeNetUsd).toBeCloseTo(19.99, 2); // 只剩 g2
+		expect(s.kpis.monthNetUsd).toBeCloseTo(19.99, 2);
+		expect(s.trend.reduce((a, p) => a + p.netUsd, 0)).toBeCloseTo(19.99, 2);
+		// 买断 KPI 同口径：g4 是待付款的买断，不算
+		expect(s.kpis.lifetimeMonthUsd).toBe(0);
+		expect(s.kpis.lifetimeMonthCount).toBe(0);
+	});
+
+	it("流水列表仍然列出未到账的订单（只是不计钱）", async () => {
+		const s = await loadAdminStats(db2 as never);
+		expect(s.transactions.map((t) => t.transaction_id)).toContain("g1");
+		expect(s.transactions.find((t) => t.transaction_id === "g1")?.order_state).toBe("PENDING");
 	});
 });

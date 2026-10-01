@@ -21,12 +21,13 @@ struct Orange_CloudApp: App {
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw = AppAppearance.system.rawValue
     @AppStorage(AppMotion.storageKey) private var reduceAnimations = false
 
-    let sharedModelContainer = CacheContainer.shared
-
     init() {
         // 最先安装崩溃捕获，让启动期任意一步崩溃都能被记录、随下次反馈带出。
         CrashReporter.install()
         CrashReporter.recordBreadcrumb("AppStart begin")
+        // BGTask 处理器必须在 didFinishLaunching 返回前登记，且不依赖任何业务对象——
+        // 越早越好，AuthManager 稍后用 setAuthManager 回填。
+        BackgroundRefresh.register()
         #if DEBUG
         MockCloudflare.activateIfRequested()   // 诊断 mock：仅 ORANGE_MOCK=1 时生效
         #endif
@@ -36,7 +37,9 @@ struct Orange_CloudApp: App {
         // 串行预热缓存库实体解析（iOS 17.x 冷启动首次并发 fetch 竞态，Sentry APPLE-IOS-Y）
         CacheContainer.warmUp()
         WhatsNewGate.wasLoggedInAtLaunch = manager.isLoggedIn
-        BackgroundRefresh.register(authManager: manager)
+        // 参与度信号：只把「已登录启动」计入，用于稍后主动邀请评分（每版本至多一次）
+        if manager.isLoggedIn { RatingPrompt.registerEngagedLaunch() }
+        BackgroundRefresh.setAuthManager(manager)
         // iOS 26 连续后台任务（R2 大对象 copy/move 续传），须在启动时注册处理器
         if #available(iOS 26.0, *) {
             ContinuedTaskRunner.register()
@@ -73,7 +76,9 @@ struct Orange_CloudApp: App {
                     handleSpotlightTap(activity)
                 }
         }
-        .modelContainer(sharedModelContainer)
+        // 这里必须现取：App.init 的 warmUp 自检可能已把坏掉的容器换掉（见 CacheContainer），
+        // 提前存成属性会让 @Query 绑在旧容器上。
+        .modelContainer(CacheContainer.shared)
         .onChange(of: scenePhase) {
             AppLog.app.info("scenePhase -> \(String(describing: scenePhase))")
             if scenePhase == .background {

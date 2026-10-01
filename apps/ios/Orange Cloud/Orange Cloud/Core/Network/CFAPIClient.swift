@@ -11,8 +11,23 @@ import Foundation
 actor CFAPIClient {
 
     private let baseURL = URL(string: "https://api.cloudflare.com/client/v4")!
-    private let session = URLSession.shared
+    private let session = CFAPIClient.makeSession()
     private let authManager: AuthManager
+
+    /// 平时就是 `URLSession.shared`。仅 DEBUG + ORANGE_MOCK=1 时换成带
+    /// `protocolClasses` 的独立 session——`URLSession.shared` **不查**
+    /// `URLProtocol.registerClass` 注册的拦截器，只有写进 configuration 的才生效，
+    /// 否则 mock 只塞了假 token、请求照样打到真 api.cloudflare.com（返回 cf=6003）。
+    private static func makeSession() -> URLSession {
+        #if DEBUG
+        if MockCloudflare.isRequested {
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [MockCFURLProtocol.self]
+            return URLSession(configuration: config)
+        }
+        #endif
+        return URLSession.shared
+    }
 
     init(authManager: AuthManager) {
         self.authManager = authManager
@@ -59,6 +74,15 @@ actor CFAPIClient {
         try await performRequest(method: "GET", path: path, queryItems: queryItems, body: nil, contentType: nil)
     }
 
+    /// JSON 请求体、原始响应体的 POST（Workers AI 文生图等 2xx 直接返回二进制、不走 CF 信封的端点）。
+    /// 非 2xx 仍由 performRequest 统一抛 APIError（含 CF 业务错误信息）。
+    func postRaw<B: Codable & Sendable>(_ path: String, body: B) async throws -> Data {
+        let encoded = try JSONEncoder().encode(body)
+        return try await performRequest(
+            method: "POST", path: path, queryItems: [], body: encoded, contentType: "application/json"
+        ).0
+    }
+
     /// 原始字节 PUT（R2 对象上传等），自带 Content-Type
     func putRaw<T: Codable & Sendable>(_ path: String, body: Data, contentType: String) async throws -> T {
         let (data, _) = try await performRequest(
@@ -103,7 +127,8 @@ actor CFAPIClient {
         guard (200...299).contains(http.statusCode) else {
             let data = (try? Data(contentsOf: tempURL)) ?? Data()
             try? FileManager.default.removeItem(at: tempURL)
-            AppLog.network.error("GET /\(Self.logPath(path)) -> \(http.statusCode)\(Self.cfErrorSummary(data))")
+            Self.logHTTPFailure("GET /\(Self.logPath(path)) -> \(http.statusCode)\(Self.cfErrorSummary(data))",
+                                status: http.statusCode, path: path, data: data)
             throw Self.mapHTTPError(status: http.statusCode, data: data)
         }
         // download 返回的系统临时文件在本调用返回后会被清理，须立刻搬到自管位置
@@ -156,7 +181,8 @@ actor CFAPIClient {
             return try await streamingUpload(path: path, fileURL: fileURL, contentType: contentType, onProgress: onProgress, isRetry: true)
         }
         guard (200...299).contains(http.statusCode) else {
-            AppLog.network.error("PUT /\(Self.logPath(path)) -> \(http.statusCode)\(Self.cfErrorSummary(data))")
+            Self.logHTTPFailure("PUT /\(Self.logPath(path)) -> \(http.statusCode)\(Self.cfErrorSummary(data))",
+                                status: http.statusCode, path: path, data: data)
             throw Self.mapHTTPError(status: http.statusCode, data: data)
         }
         return try Self.decode(data, path: path)
@@ -291,7 +317,37 @@ actor CFAPIClient {
             throw APIError.networkError(URLError(.badServerResponse))
         }
         guard (200...299).contains(http.statusCode) else {
-            AppLog.network.error("\(method) /\(Self.logPath(path)) (jwt) -> \(http.statusCode)\(Self.cfErrorSummary(data))")
+            Self.logHTTPFailure("\(method) /\(Self.logPath(path)) (jwt) -> \(http.statusCode)\(Self.cfErrorSummary(data))",
+                                status: http.statusCode, path: path, data: data)
+            throw Self.mapHTTPError(status: http.statusCode, data: data)
+        }
+        return data
+    }
+
+    /// 对 Cloudflare 系外部主机（如 R2 SQL 的 api.sql.cloudflarestorage.com）发 JSON POST，
+    /// 复用 OAuth Bearer 与临期刷新，返回 2xx 原始响应体。
+    /// 注意：这些主机不一定走 client/v4 信封，错误体也交给 mapHTTPError 尽力解析。
+    func postExternalJSON<B: Codable & Sendable>(url: URL, body: B) async throws -> Data {
+        let token = try await validAccessToken()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            Self.logTransportError("POST", url.absoluteString, "(external) network error", error)
+            throw APIError.networkError(error)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.networkError(URLError(.badServerResponse))
+        }
+        guard (200...299).contains(http.statusCode) else {
+            Self.logHTTPFailure("POST \(url.host ?? "")\(url.path) (external) -> \(http.statusCode)\(Self.cfErrorSummary(data))",
+                                status: http.statusCode, path: url.path, data: data)
             throw Self.mapHTTPError(status: http.statusCode, data: data)
         }
         return data
@@ -392,7 +448,8 @@ actor CFAPIClient {
             throw APIError.networkError(URLError(.badServerResponse))
         }
         guard (200...299).contains(http.statusCode) else {
-            AppLog.network.error("\(method) /\(Self.logPath(path)) (jwt mp) -> \(http.statusCode)\(Self.cfErrorSummary(data))")
+            Self.logHTTPFailure("\(method) /\(Self.logPath(path)) (jwt mp) -> \(http.statusCode)\(Self.cfErrorSummary(data))",
+                                status: http.statusCode, path: path, data: data)
             throw Self.mapHTTPError(status: http.statusCode, data: data)
         }
         return data
@@ -404,6 +461,15 @@ actor CFAPIClient {
         query: String,
         variables: V
     ) async throws -> D {
+        try await graphQLAllowingPartialAuthz(query: query, variables: variables).data
+    }
+
+    /// 同 graphQL，但把「部分字段 authz、其余字段照常返回」这一情况回给调用方，
+    /// 便于 UI 区分「整账号无账户级数据」与「只是某些时间窗/数据集缺」（见下方说明）。
+    func graphQLAllowingPartialAuthz<D: Codable & Sendable, V: Codable & Sendable>(
+        query: String,
+        variables: V
+    ) async throws -> (data: D, partialAuthz: Bool) {
         let body = try JSONEncoder().encode(GraphQLRequest(query: query, variables: variables))
         let envelope: GraphQLResponse<D> = try await request(
             method: "POST", path: "graphql", queryItems: [], body: body
@@ -411,10 +477,24 @@ actor CFAPIClient {
         if let first = envelope.errors?.first {
             // GraphQL 错误时 HTTP 仍为 200——网络层只看状态码看不到这层，这里单独记，
             // 便于排查「请求 200 但数据没出来」（如数据集权限/字段不可用）。
-            AppLog.network.error("graphQL error (\(envelope.errors?.count ?? 1)): \(first.message)")
-            // authz（账户级数据集未授权）单独抛——调用方据此降级到「免费账号无账户级数据」态，
-            // 并停发同账号其余注定失败的账户级查询。
+            // authz（免费账号查账户级数据集的常态）与限流不是故障：UI 已按降级/重试处理，
+            // 记 notice 不进遥测；其余 GraphQL 错误仍是 error（多为查询/字段写错了）。
+            let line = "graphQL error (\(envelope.errors?.count ?? 1)): \(first.message)"
+            if envelope.errors?.contains(where: \.isAuthz) == true || first.message.contains("Rate limiter") {
+                AppLog.network.notice("\(line)")
+            } else {
+                AppLog.network.error("\(line)")
+            }
             if envelope.errors?.contains(where: \.isAuthz) == true {
+                // GraphQL 允许「部分字段 authz、其余字段照常返回」——免费账号最典型：
+                // today 窗口有数据、month 窗口 authz。此时 data 已经解出来了，整包丢掉
+                // 等于把手上的数据扔了（概览用量会整块误降级成「无账户级数据」）。
+                // 故：解出 data 就返回（并标 partialAuthz），只有 data 为空才是真·整账号
+                // 无账户级数据权限 → 抛给调用方降级并停发其余注定失败的账户级查询。
+                if let data = envelope.data {
+                    AppLog.network.info("graphQL partial authz: 返回已授权字段，缺失字段按空处理")
+                    return (data, true)
+                }
                 throw APIError.accountNotAuthorized
             }
             throw APIError.cloudflareError(code: 0, message: first.message)
@@ -422,7 +502,7 @@ actor CFAPIClient {
         guard let data = envelope.data else {
             throw APIError.decodingError(URLError(.cannotDecodeContentData))
         }
-        return data
+        return (data, false)
     }
 
     // MARK: - 内部实现
@@ -512,14 +592,12 @@ actor CFAPIClient {
             )
         }
 
-        // 结果各记一行（2xx → info 带响应体大小；其余 → error 带 CF 业务错误码/消息），便于排查。
-        // 预期业务状态（未开通 R2 / 尚无 ruleset 等）降级 info，不进遥测。
+        // 结果各记一行（2xx → info 带响应体大小；其余按 failureLevel 定级），便于排查。
         if (200...299).contains(http.statusCode) {
             AppLog.network.info("\(method) /\(Self.logPath(path)) -> \(http.statusCode) (\(elapsedMs)ms, \(Self.sizeLabel(data.count)))")
-        } else if Self.isExpectedBusinessState(status: http.statusCode, path: path, data: data) {
-            AppLog.network.info("\(method) /\(Self.logPath(path)) -> \(http.statusCode) (\(elapsedMs)ms)\(Self.cfErrorSummary(data))")
         } else {
-            AppLog.network.error("\(method) /\(Self.logPath(path)) -> \(http.statusCode) (\(elapsedMs)ms)\(Self.cfErrorSummary(data))")
+            Self.logHTTPFailure("\(method) /\(Self.logPath(path)) -> \(http.statusCode) (\(elapsedMs)ms)\(Self.cfErrorSummary(data))",
+                                status: http.statusCode, path: path, data: data)
         }
 
         // 5. HTTP 错误处理（优先透出 CF 返回的业务错误信息）
@@ -584,27 +662,63 @@ actor CFAPIClient {
         return false
     }
 
-    /// 传输层失败统一记录：取消降级 info，其余保持 error
+    /// 链路环境问题（超时 / 连接中断 / 无网 / DNS / TLS 握手失败）：取决于用户当时的网络，
+    /// App 侧无可修，UI 已提示重试。记 notice——留在本地日志供反馈排查，但不进遥测。
+    private static func isEnvironmentalNetworkFailure(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .timedOut, .networkConnectionLost, .notConnectedToInternet,
+             .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+             .secureConnectionFailed, .internationalRoamingOff, .dataNotAllowed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 传输层失败统一记录：取消降级 info，环境类降级 notice，其余保持 error
     private static func logTransportError(_ method: String, _ path: String, _ label: String, _ error: Error) {
         let line = "\(method) /\(logPath(path)) \(label): \(error.localizedDescription)"
         if isCancellation(error) {
             AppLog.network.info("\(line)")
+        } else if isEnvironmentalNetworkFailure(error) {
+            AppLog.network.notice("\(line)")
         } else {
             AppLog.network.error("\(line)")
         }
     }
 
-    /// 预期业务状态（非故障，UI 均按空态/降级处理）：
-    /// 账号未开通 R2（403 cf=10042）、zone 该阶段还没有 entrypoint ruleset
-    ///（404 cf=10003，Snippets / WAF / 速率限制首次进入的常态）、
-    /// OAuth token 无账单读权限（subscriptions 403 cf=10000）。
-    private static func isExpectedBusinessState(status: Int, path: String, data: Data) -> Bool {
-        guard let code = cfErrorCode(data) else { return false }
+    private enum FailureLogLevel { case info, notice, error }
+
+    /// 非 2xx 的记录级别。分三档：
+    /// - info：日常空态，连看都不用看——账号未开通 R2（403 cf=10042）、zone 该阶段还没有
+    ///   entrypoint ruleset（404 cf=10003，Snippets / WAF / 速率限制首次进入的常态）、
+    ///   OAuth token 无账单读权限（subscriptions 403 cf=10000）。
+    /// - notice：4xx 且 CF 给了业务错误码——接口明确告知这次操作不被接受（记录被 Email
+    ///   Routing 托管、存在非 CF 的 MX、缺 filters、邮箱未验证、token 无该权限……），
+    ///   原因已经原样展示给用户了。属预期结果而非故障，留在本地日志但不进遥测。
+    /// - error：无业务码的 4xx（接口没说为什么，多半是我们请求构造错了）与全部 5xx。
+    ///   这两类才是该在 Sentry 里看见的。
+    private static func failureLevel(status: Int, path: String, data: Data) -> FailureLogLevel {
+        // URL Scanner v2 错误体不是 CF 标准信封（无 code），按路径判定：
+        // 结果轮询 404 = 扫描未完成（每次扫描都会来几次）、提交 409 = 主机名近期已扫过，都是预期态
+        if path.contains("/urlscanner/v2/") && (status == 404 || status == 409) { return .info }
+        guard let code = cfErrorCode(data) else { return .error }
         switch (status, code) {
-        case (403, 10042): return true
-        case (404, 10003): return true
-        case (403, 10000): return path.hasSuffix("/subscriptions")
-        default:           return false
+        case (403, 10042): return .info
+        case (404, 10003): return .info
+        case (404, 10059): return .info   // R2 桶尚未配置 CORS，空态而非故障
+        case (403, 10000) where path.hasSuffix("/subscriptions"): return .info
+        default: return (400...499).contains(status) ? .notice : .error
+        }
+    }
+
+    /// 非 2xx 统一记一行，级别由 failureLevel 判定
+    private static func logHTTPFailure(_ line: String, status: Int, path: String, data: Data) {
+        switch failureLevel(status: status, path: path, data: data) {
+        case .info:   AppLog.network.info("\(line)")
+        case .notice: AppLog.network.notice("\(line)")
+        case .error:  AppLog.network.error("\(line)")
         }
     }
 
@@ -646,7 +760,12 @@ actor CFAPIClient {
     private static func cfErrorSummary(_ data: Data) -> String {
         guard let env = try? JSONDecoder().decode(CFAPIResponse<EmptyResponse>.self, from: data),
               let first = env.errors.first else { return "" }
-        return " cf=\(first.code) \(first.message)"
+        // documentation_url（2026-08-20 起 CF 在 4xx 回的所需权限文档）与 source.pointer
+        // （出错字段的 JSON Pointer）都进日志：403/权限类问题排查时这两条最省事。
+        var line = " cf=\(first.code) \(first.message)"
+        if let pointer = first.source?.pointer { line += " at \(pointer)" }
+        if let doc = first.documentationURL { line += " doc=\(doc)" }
+        return line
     }
 
     /// 响应体大小（便于发现「200 但空结果」）
@@ -658,7 +777,8 @@ actor CFAPIClient {
     private static func mapHTTPError(status: Int, data: Data) -> APIError {
         if let envelope = try? JSONDecoder().decode(CFAPIResponse<EmptyResponse>.self, from: data),
            let first = envelope.errors.first {
-            return .cloudflareError(code: first.code, message: first.message)
+            return .cloudflareError(code: first.code, message: first.message,
+                                    documentationURL: first.documentationURL)
         }
         switch status {
         case 401:       return .unauthorized

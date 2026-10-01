@@ -1,5 +1,10 @@
+import { collectedOrderStateSql } from "../ledger/order-state";
 import { getDb, queryAll, queryFirst } from "./db";
-import { ENVIRONMENT, PRODUCT_ORDER, type Filters } from "./types";
+import { ENVIRONMENT, PLATFORM_ORDER, PRODUCT_ORDER, type Filters } from "./types";
+
+// 营收只认「钱已到账」的交易：Play 的宽限期 / 待付款订单虽带金额，但钱还没收到
+// （口径见 lib/ledger/order-state.ts）。交易条数、图表等「事件计数」不受影响。
+const COLLECTED = collectedOrderStateSql();
 
 // ---------------------------------------------------------------------------
 // Filter helpers
@@ -12,6 +17,8 @@ interface FilterCols {
 	product?: string;
 	/** epoch-ms column the `days` window applies to (omit to ignore). */
 	date?: string;
+	/** platform column name (omit to ignore the store filter). */
+	platform?: string;
 }
 
 /** Build an ` AND ...` SQL fragment + bound params for the active filters. */
@@ -33,6 +40,10 @@ function applyFilters(f: Filters, cols: FilterCols): { sql: string; params: unkn
 		clauses.push(`${cols.date} >= ?`);
 		params.push(Date.now() - f.days * 86_400_000);
 	}
+	if (cols.platform && f.platform) {
+		clauses.push(`${cols.platform} = ?`);
+		params.push(f.platform);
+	}
 
 	return { sql: clauses.length ? ` AND ${clauses.join(" AND ")}` : "", params };
 }
@@ -47,6 +58,15 @@ export interface CurrencyRevenue {
 	sumMillis: number;
 }
 
+/** 单个平台（App Store / Google Play）的横向对比口径。 */
+export interface PlatformSummary {
+	platform: string;
+	activeTotal: number;
+	transactions: number;
+	refunds: number;
+	revenueByCurrency: CurrencyRevenue[];
+}
+
 export interface Overview {
 	activeLifetime: number;
 	activeSubscription: number;
@@ -58,6 +78,8 @@ export interface Overview {
 	autoRenewTotal: number;
 	autoRenewRate: number;
 	revenueByCurrency: CurrencyRevenue[];
+	/** 分平台明细（只含有数据的平台，按 PLATFORM_ORDER 排序）。 */
+	platforms: PlatformSummary[];
 }
 
 export interface StackedDay {
@@ -89,6 +111,8 @@ export interface LinkedTxn {
 	expires_date: number | null;
 	revocation_date: number | null;
 	revocation_reason: number | null;
+	/** Play 的 orders.get state（Apple 行为 null）；PENDING/CANCELED = 钱未到账 */
+	order_state: string | null;
 }
 
 export interface NotificationRow {
@@ -99,6 +123,7 @@ export interface NotificationRow {
 	transaction_id: string | null;
 	environment: string | null;
 	received_at: number;
+	platform: string | null;
 	/** Associated transaction, or null when none is linked/found. */
 	txn: LinkedTxn | null;
 }
@@ -111,6 +136,7 @@ interface NotificationJoinRow {
 	transaction_id: string | null;
 	environment: string | null;
 	received_at: number;
+	platform: string | null;
 	t_id: string | null;
 	t_product_id: string | null;
 	t_type: string | null;
@@ -121,6 +147,7 @@ interface NotificationJoinRow {
 	t_expires_date: number | null;
 	t_revocation_date: number | null;
 	t_revocation_reason: number | null;
+	t_order_state: string | null;
 }
 
 export interface TransactionRow {
@@ -137,6 +164,9 @@ export interface TransactionRow {
 	purchase_date: number | null;
 	revocation_date: number | null;
 	notification_type: string | null;
+	platform: string | null;
+	/** Play 的 orders.get state（Apple 行为 null）；PENDING/CANCELED = 钱未到账 */
+	order_state: string | null;
 }
 
 export interface ExpiringRow {
@@ -147,6 +177,7 @@ export interface ExpiringRow {
 	environment: string | null;
 	price_millis: number | null;
 	currency: string | null;
+	platform: string | null;
 }
 
 export interface Page<T> {
@@ -225,10 +256,20 @@ function paginate(total: number, page: number, pageSize: number) {
 // ---------------------------------------------------------------------------
 
 async function getOverview(db: D1Database, f: Filters): Promise<Overview> {
-	const subActive = applyFilters(f, { env: "environment", product: "product_id" });
-	const tx = applyFilters(f, { env: "environment", product: "product_id", date: "purchase_date" });
+	const subActive = applyFilters(f, {
+		env: "environment",
+		product: "product_id",
+		platform: "platform",
+	});
+	const tx = applyFilters(f, {
+		env: "environment",
+		product: "product_id",
+		date: "purchase_date",
+		platform: "platform",
+	});
 
-	const [lifetimeRows, txRow, autoRow, revenueRows] = await Promise.all([
+	const [lifetimeRows, txRow, autoRow, revenueRows, platformActive, platformTx] =
+		await Promise.all([
 		queryAll<{ is_lifetime: number; c: number }>(
 			db,
 			`SELECT is_lifetime, COUNT(*) c FROM subscriptions
@@ -254,9 +295,33 @@ async function getOverview(db: D1Database, f: Filters): Promise<Overview> {
 			db,
 			`SELECT currency, COUNT(*) count, SUM(price_millis) sum_millis
 			 FROM transactions
-			 WHERE revocation_date IS NULL${tx.sql}
+			 WHERE revocation_date IS NULL AND ${COLLECTED}${tx.sql}
 			 GROUP BY currency
 			 ORDER BY count DESC, currency ASC`,
+			tx.params,
+		),
+		// 分平台明细：活跃权益来自 subscriptions，交易 / 退款 / 营收来自 transactions。
+		queryAll<{ platform: string; c: number }>(
+			db,
+			`SELECT platform, COUNT(*) c FROM subscriptions
+			 WHERE status = 'active'${subActive.sql} GROUP BY platform`,
+			subActive.params,
+		),
+		queryAll<{
+			platform: string;
+			currency: string | null;
+			total: number;
+			paid: number;
+			refunds: number;
+			sum_millis: number;
+		}>(
+			db,
+			`SELECT platform, currency, COUNT(*) total,
+			        SUM(CASE WHEN revocation_date IS NULL AND ${COLLECTED} THEN 1 ELSE 0 END) paid,
+			        SUM(CASE WHEN revocation_date IS NOT NULL THEN 1 ELSE 0 END) refunds,
+			        SUM(CASE WHEN revocation_date IS NULL AND ${COLLECTED} THEN price_millis ELSE 0 END) sum_millis
+			 FROM transactions WHERE 1 = 1${tx.sql}
+			 GROUP BY platform, currency`,
 			tx.params,
 		),
 	]);
@@ -266,7 +331,37 @@ async function getOverview(db: D1Database, f: Filters): Promise<Overview> {
 	const txTotals = txRow[0] ?? { total: 0, refunds: 0 };
 	const auto = autoRow[0] ?? { on_count: 0, total: 0 };
 
+	// 把两组分平台行合并成 PlatformSummary[]（只保留真有数据的平台）。
+	const summaries = new Map<string, PlatformSummary>();
+	const summaryFor = (platform: string): PlatformSummary => {
+		let s = summaries.get(platform);
+		if (!s) {
+			s = { platform, activeTotal: 0, transactions: 0, refunds: 0, revenueByCurrency: [] };
+			summaries.set(platform, s);
+		}
+		return s;
+	};
+	for (const r of platformActive) summaryFor(r.platform ?? "apple").activeTotal += r.c;
+	for (const r of platformTx) {
+		const s = summaryFor(r.platform ?? "apple");
+		s.transactions += r.total;
+		s.refunds += r.refunds ?? 0;
+		if ((r.paid ?? 0) > 0) {
+			s.revenueByCurrency.push({
+				currency: r.currency ?? "—",
+				count: r.paid,
+				sumMillis: r.sum_millis ?? 0,
+			});
+		}
+	}
+	const platforms = [...summaries.values()].sort(
+		(a, b) =>
+			PLATFORM_ORDER.indexOf(a.platform as (typeof PLATFORM_ORDER)[number]) -
+			PLATFORM_ORDER.indexOf(b.platform as (typeof PLATFORM_ORDER)[number]),
+	);
+
 	return {
+		platforms,
 		activeLifetime,
 		activeSubscription,
 		activeTotal: activeLifetime + activeSubscription,
@@ -289,6 +384,7 @@ async function getPurchaseTrend(db: D1Database, f: Filters): Promise<StackedSeri
 		env: "environment",
 		product: "product_id",
 		date: "purchase_date",
+		platform: "platform",
 	});
 	const rows = await queryAll<{ d: string; product_id: string | null; c: number }>(
 		db,
@@ -312,6 +408,7 @@ async function getNotificationTrend(db: D1Database, f: Filters): Promise<Stacked
 		env: "n.environment",
 		product: "t.product_id",
 		date: "n.received_at",
+		platform: "n.platform",
 	});
 	const rows = await queryAll<{ d: string; notification_type: string; c: number }>(
 		db,
@@ -327,7 +424,11 @@ async function getNotificationTrend(db: D1Database, f: Filters): Promise<Stacked
 }
 
 async function getProductMix(db: D1Database, f: Filters): Promise<NameValue[]> {
-	const { sql, params } = applyFilters(f, { env: "environment", product: "product_id" });
+	const { sql, params } = applyFilters(f, {
+		env: "environment",
+		product: "product_id",
+		platform: "platform",
+	});
 	const rows = await queryAll<{ product_id: string | null; c: number }>(
 		db,
 		`SELECT product_id, COUNT(*) c FROM subscriptions
@@ -338,7 +439,11 @@ async function getProductMix(db: D1Database, f: Filters): Promise<NameValue[]> {
 }
 
 async function getStatusBreakdown(db: D1Database, f: Filters): Promise<NameValue[]> {
-	const { sql, params } = applyFilters(f, { env: "environment", product: "product_id" });
+	const { sql, params } = applyFilters(f, {
+		env: "environment",
+		product: "product_id",
+		platform: "platform",
+	});
 	const rows = await queryAll<{ status: string | null; c: number }>(
 		db,
 		`SELECT status, COUNT(*) c FROM subscriptions
@@ -360,6 +465,7 @@ async function getNotificationsPage(
 		env: "n.environment",
 		product: "t.product_id",
 		date: "n.received_at",
+		platform: "n.platform",
 	});
 	const totalRow = await queryFirst<{ c: number }>(
 		db,
@@ -376,12 +482,12 @@ async function getNotificationsPage(
 	const raw = await queryAll<NotificationJoinRow>(
 		db,
 		`SELECT n.notification_uuid, n.notification_type, n.subtype,
-		        n.original_transaction_id, n.transaction_id, n.environment, n.received_at,
+		        n.original_transaction_id, n.transaction_id, n.environment, n.received_at, n.platform,
 		        t.transaction_id AS t_id, t.product_id AS t_product_id, t.type AS t_type,
 		        t.offer_type AS t_offer_type, t.price_millis AS t_price_millis,
 		        t.currency AS t_currency, t.purchase_date AS t_purchase_date,
 		        t.expires_date AS t_expires_date, t.revocation_date AS t_revocation_date,
-		        t.revocation_reason AS t_revocation_reason
+		        t.revocation_reason AS t_revocation_reason, t.order_state AS t_order_state
 		 FROM notifications n
 		 LEFT JOIN transactions t ON t.transaction_id = n.transaction_id
 		 WHERE 1 = 1${filter.sql}
@@ -397,6 +503,7 @@ async function getNotificationsPage(
 		transaction_id: r.transaction_id,
 		environment: r.environment,
 		received_at: r.received_at,
+		platform: r.platform,
 		txn: r.t_id
 			? {
 					transaction_id: r.t_id,
@@ -409,6 +516,7 @@ async function getNotificationsPage(
 					expires_date: r.t_expires_date,
 					revocation_date: r.t_revocation_date,
 					revocation_reason: r.t_revocation_reason,
+					order_state: r.t_order_state,
 				}
 			: null,
 	}));
@@ -425,6 +533,7 @@ async function getTransactionsPage(
 		env: "environment",
 		product: "product_id",
 		date: "purchase_date",
+		platform: "platform",
 	});
 	const totalRow = await queryFirst<{ c: number }>(
 		db,
@@ -437,7 +546,7 @@ async function getTransactionsPage(
 		db,
 		`SELECT transaction_id, original_transaction_id, product_id, type, offer_type,
 		        offer_identifier, storefront, price_millis, currency, environment, purchase_date,
-		        revocation_date, notification_type
+		        revocation_date, notification_type, platform, order_state
 		 FROM transactions
 		 WHERE 1 = 1${sql}
 		 ORDER BY created_at DESC LIMIT ? OFFSET ?`,
@@ -447,15 +556,19 @@ async function getTransactionsPage(
 }
 
 async function getExpiringSoon(db: D1Database, f: Filters): Promise<ExpiringRow[]> {
-	const { sql, params } = applyFilters(f, { env: "environment", product: "product_id" });
+	const { sql, params } = applyFilters(f, {
+		env: "environment",
+		product: "product_id",
+		platform: "platform",
+	});
 	return queryAll<ExpiringRow>(
 		db,
 		`SELECT original_transaction_id, product_id, expires_date,
-		        auto_renew_status, environment, price_millis, currency
+		        auto_renew_status, environment, price_millis, currency, platform
 		 FROM subscriptions
 		 WHERE status = 'active' AND is_lifetime = 0
 		   AND expires_date IS NOT NULL AND expires_date > ?${sql}
-		 ORDER BY expires_date ASC LIMIT 12`,
+		 ORDER BY expires_date ASC LIMIT 50`,
 		[Date.now(), ...params],
 	);
 }

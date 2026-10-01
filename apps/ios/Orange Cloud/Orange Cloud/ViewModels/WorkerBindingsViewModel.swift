@@ -23,19 +23,25 @@ final class WorkerBindingsViewModel {
     // 快速绑定用的可选资源（打开绑定选择器时惰性加载）
     private(set) var d1Databases:  [D1Database] = []
     private(set) var kvNamespaces: [KVNamespace] = []
+    private(set) var r2Buckets:    [R2Bucket] = []
     private(set) var resourcesLoaded = false
     var loadingResources = false
 
     private let service:   WorkerService
     private let d1Service: D1Service
     private let kvService: KVService
+    private let r2Service: R2Service
     let accountId:  String
     let scriptName: String
 
-    init(service: WorkerService, d1Service: D1Service, kvService: KVService, accountId: String, scriptName: String) {
+    init(
+        service: WorkerService, d1Service: D1Service, kvService: KVService, r2Service: R2Service,
+        accountId: String, scriptName: String
+    ) {
         self.service    = service
         self.d1Service  = d1Service
         self.kvService  = kvService
+        self.r2Service  = r2Service
         self.accountId  = accountId
         self.scriptName = scriptName
     }
@@ -126,7 +132,7 @@ final class WorkerBindingsViewModel {
     // MARK: - 快速绑定 D1 / KV
 
     /// 打开绑定选择器时按需加载可选资源（各类型读权限缺失时静默跳过对应列表）
-    func loadResources(canReadD1: Bool, canReadKV: Bool) async {
+    func loadResources(canReadD1: Bool, canReadKV: Bool, canReadR2: Bool) async {
         guard !loadingResources else { return }
         loadingResources = true
         defer { loadingResources = false }
@@ -135,6 +141,9 @@ final class WorkerBindingsViewModel {
         }
         if canReadKV {
             kvNamespaces = (try? await kvService.listNamespaces(accountId: accountId)) ?? kvNamespaces
+        }
+        if canReadR2 {
+            r2Buckets = (try? await r2Service.listBuckets(accountId: accountId)) ?? r2Buckets
         }
         resourcesLoaded = true
     }
@@ -198,25 +207,38 @@ final class WorkerBindingsViewModel {
         }
     }
 
-    /// 批量导入密钥（secret_text）：逐个 PUT（端点不支持批量），同名覆盖。
-    /// 任一失败即停，报告已写入数量并刷新列表反映真实状态。
+    /// 批量导入密钥（secret_text）：走 secrets-bulk 端点单次 PATCH 原子生效，同名覆盖。
+    /// 超过 100 项自动分批（每批各自原子）。
     func bulkImportSecrets(_ pairs: [(name: String, value: String)]) async -> Bool {
         guard !isSaving, !pairs.isEmpty else { return false }
         isSaving = true
         error = nil
         defer { isSaving = false }
-        var done = 0
         do {
-            for pair in pairs {
-                try await service.putSecret(accountId: accountId, scriptName: scriptName, name: pair.name, text: pair.value)
-                done += 1
+            // secrets-bulk（2026-06 新端点）：单次 PATCH 原子生效，不再逐个 PUT（单次上限 100 项）
+            for chunk in pairs.chunked(into: 100) {
+                try await service.bulkPatchSecrets(
+                    accountId: accountId, scriptName: scriptName,
+                    upserts: chunk.map { (name: $0.name, text: $0.value) }
+                )
             }
             secrets = (try? await service.listSecrets(accountId: accountId, scriptName: scriptName)) ?? secrets
             return true
         } catch {
-            self.error = String(localized: "已导入 \(done)/\(pairs.count) 项后失败：\(error.localizedDescription)")
+            self.error = error.localizedDescription
             secrets = (try? await service.listSecrets(accountId: accountId, scriptName: scriptName)) ?? secrets
             return false
+        }
+    }
+}
+
+// MARK: - 分块工具（secrets-bulk 单次上限 100 项）
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0 else { return [self] }
+        return stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
         }
     }
 }

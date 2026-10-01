@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import jiamin.chen.orangecloud.data.model.AccountUsage
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -72,6 +73,22 @@ class AppPrefs @Inject constructor(
         dataStore.edit { it[KEY_NOTIF_WORKER] = enabled }
     }
 
+    /**
+     * 某个登录身份下默认进入的 Cloudflare 账号（按身份分键）。
+     * 用户切一次账号就记住它，下次冷启动直接进这个账号而不是列表第一个（issue #71）。
+     */
+    suspend fun defaultAccountId(sessionId: String): String? {
+        if (sessionId.isEmpty()) return null
+        return dataStore.data.first()[defaultAccountKey(sessionId)]?.takeIf { it.isNotEmpty() }
+    }
+
+    suspend fun setDefaultAccountId(sessionId: String, accountId: String) {
+        if (sessionId.isEmpty() || accountId.isEmpty()) return
+        dataStore.edit { it[defaultAccountKey(sessionId)] = accountId }
+    }
+
+    private fun defaultAccountKey(sessionId: String) = stringPreferencesKey("pref_default_account_$sessionId")
+
     /** 某个资源列表的排序偏好（key 如 "workers" / "pages"）。 */
     fun listSort(key: String): Flow<ResourceSort> =
         dataStore.data.map { ResourceSort.from(it[intPreferencesKey("pref_sort_$key")] ?: 0) }
@@ -100,6 +117,23 @@ class AppPrefs @Inject constructor(
     suspend fun setUsageBillingDay(accountId: String, day: Int) {
         dataStore.edit { it[intPreferencesKey("pref_usage_bday_$accountId")] = day.coerceIn(1, 28) }
     }
+
+    /**
+     * Dashboard 置顶资源键集合（按账号分键——一身份多账号，账号级视图必须各自隔离）。
+     * 值形如 `ZONE|abc123`，**只存类型与 id**，标题由 UI 现查，资源改名后置顶不失效。
+     */
+    fun pinnedResources(accountId: String): Flow<Set<String>> =
+        dataStore.data.map { it[pinnedResourcesKey(accountId)] ?: emptySet() }
+
+    /** 置顶 / 取消置顶（幂等切换）。 */
+    suspend fun togglePinnedResource(accountId: String, key: String) {
+        dataStore.edit { prefs ->
+            val current = prefs[pinnedResourcesKey(accountId)] ?: emptySet()
+            prefs[pinnedResourcesKey(accountId)] = if (key in current) current - key else current + key
+        }
+    }
+
+    private fun pinnedResourcesKey(accountId: String) = stringSetPreferencesKey("pref_pinned_res_$accountId")
 
     /** 用量快照落盘（按账号，JSON），供下次冷启动/切回即时回显（对齐 iOS UsageCache）。 */
     suspend fun loadUsageCache(accountId: String): AccountUsage? {

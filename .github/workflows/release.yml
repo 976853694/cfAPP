@@ -1,0 +1,574 @@
+# Orange Cloud — 自动打包发布工作流。
+#
+#   Android：使用 CI 管理的密钥库签名（首次自动随机生成，之后复用；**绝不使用官方发行密钥**）。
+#   iOS    ：产出未签名 IPA（不需要 Apple 证书 / 描述文件，安装前请自行重签）。
+#
+# 触发方式：
+#   1) push 到 main / master（限 apps/android、apps/ios、packages/changelog 变更）
+#      → 重新构建并刷新滚动预发布 Release（tag: ci-latest）
+#   2) 手动触发 → 可自填 tag，打一个正式版本 Release
+name: Release builds
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "apps/android/**"
+      - "apps/ios/**"
+      - "packages/changelog/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag。产物会挂到该 tag 的 Release 上（不存在则创建）。"
+        required: false
+        default: ci-latest
+        type: string
+      prerelease:
+        description: "标记为预发布（pre-release）。"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Android：oss 自编译风味 + CI 随机/托管密钥库
+  # ---------------------------------------------------------------------------
+  android:
+    name: Build Android APK (oss)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      version_name: ${{ steps.meta.outputs.version_name }}
+      version_code: ${{ steps.meta.outputs.version_code }}
+      apk_name: ${{ steps.package.outputs.apk_name }}
+      keystore_generated: ${{ steps.sign.outputs.generated }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version from Gradle
+        id: meta
+        run: |
+          set -euo pipefail
+          GRADLE_FILE="apps/android/app/build.gradle.kts"
+          VERSION_CODE="$(grep -m1 'versionCode *=' "$GRADLE_FILE" | grep -oE '[0-9]+')"
+          VERSION_NAME="$(grep -m1 'versionName *=' "$GRADLE_FILE" | sed -E 's/.*"(.*)".*/\1/')"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "Android version: $VERSION_NAME ($VERSION_CODE)"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Ensure SDK components
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null
+          echo "ANDROID_HOME=$ANDROID_HOME"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare signing keystore
+        id: sign
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KS_DIR="$RUNNER_TEMP/keystore"
+          mkdir -p "$KS_DIR"
+          KS_FILE="$KS_DIR/ci-release.jks"
+          ALIAS="${KEY_ALIAS:-ci}"
+          GENERATED="false"
+
+          if [[ -n "${KEYSTORE_B64:-}" ]]; then
+            echo "使用仓库 Secret ANDROID_KEYSTORE_BASE64 中的密钥库。"
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS_FILE"
+            if [[ -z "${KEYSTORE_PASSWORD:-}" ]]; then
+              echo "::error::已配置 ANDROID_KEYSTORE_BASE64，但缺少 ANDROID_KEYSTORE_PASSWORD。"
+              exit 1
+            fi
+            STORE_PW="$KEYSTORE_PASSWORD"
+            KEY_PW="${KEY_PASSWORD:-$STORE_PW}"
+          else
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64 —— 本次运行为你随机生成一次性密钥库。"
+            echo "::warning::请下载下方 android-ci-keystore 工件，base64 后存为仓库 Secret ANDROID_KEYSTORE_BASE64，之后所有构建将复用同一签名。"
+            GENERATED="true"
+            STORE_PW="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
+            KEY_PW="$STORE_PW"
+            keytool -genkeypair -v \
+              -keystore "$KS_FILE" \
+              -storetype PKCS12 \
+              -alias "$ALIAS" \
+              -keyalg RSA -keysize 4096 -validity 10950 \
+              -storepass "$STORE_PW" -keypass "$KEY_PW" \
+              -dname "CN=Orange Cloud CI, OU=Self-build, O=Orange Cloud, L=CI, ST=CI, C=CN"
+          fi
+
+          echo "::add-mask::$STORE_PW"
+          echo "::add-mask::$KEY_PW"
+
+          # app/build.gradle.kts 读取 rootProject.file("keystore.properties")，即 apps/android/keystore.properties
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$KS_FILE" "$STORE_PW" "$ALIAS" "$KEY_PW" > apps/android/keystore.properties
+          chmod 600 apps/android/keystore.properties
+
+          echo "generated=$GENERATED" >> "$GITHUB_OUTPUT"
+
+          if [[ "$GENERATED" == "true" ]]; then
+            OUT="$RUNNER_TEMP/keystore-out"
+            mkdir -p "$OUT"
+            cp "$KS_FILE" "$OUT/orange-cloud-ci.jks"
+            {
+              echo "Orange Cloud CI 一次性签名密钥库"
+              echo ""
+              echo "alias:          $ALIAS"
+              echo "storePassword:  $STORE_PW"
+              echo "keyPassword:    $KEY_PW"
+              echo ""
+              echo "持久化方式（二选一）："
+              echo "  1. 保存本文件，把 orange-cloud-ci.jks 的内容 base64 后写入仓库 Secret:"
+              echo "       base64 -w0 orange-cloud-ci.jks      # macOS: base64 -i orange-cloud-ci.jks"
+              echo "     并设置 Secrets: ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD"
+              echo "  2. 什么都不做 —— 每次构建都会得到一个新的随机签名，产物之间无法互相覆盖安装。"
+            } > "$OUT/README.txt"
+          fi
+
+      - name: Build oss release APK
+        env:
+          OAUTH_CLIENT_ID_SECRET: ${{ secrets.OAUTH_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          chmod +x apps/android/gradlew
+          cd apps/android
+
+          GRADLE_ARGS=(":app:assembleOssRelease" "--stacktrace")
+          if [[ -n "${OAUTH_CLIENT_ID_SECRET:-}" ]]; then
+            GRADLE_ARGS=("-POAUTH_CLIENT_ID=$OAUTH_CLIENT_ID_SECRET" "${GRADLE_ARGS[@]}")
+          else
+            echo "::warning::未配置 Secret OAUTH_CLIENT_ID —— oss 构建的 OAUTH_CLIENT_ID 为空，打出的包可安装但无法登录 Cloudflare。"
+          fi
+
+          ./gradlew "${GRADLE_ARGS[@]}"
+
+      - name: Package APK
+        id: package
+        env:
+          VERSION_NAME: ${{ steps.meta.outputs.version_name }}
+          VERSION_CODE: ${{ steps.meta.outputs.version_code }}
+        run: |
+          set -euo pipefail
+          SRC_DIR="apps/android/app/build/outputs/apk/oss/release"
+          SRC_APK="$(find "$SRC_DIR" -maxdepth 1 -type f -name '*.apk' | head -n1)"
+          if [[ -z "$SRC_APK" ]]; then
+            echo "::error::未找到 oss release APK（$SRC_DIR）。"
+            find apps/android/app/build/outputs -maxdepth 5 -type f -name '*.apk' || true
+            exit 1
+          fi
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          APK_NAME="orange-cloud-oss-${VERSION_NAME}-${VERSION_CODE}-${SHORT_SHA}.apk"
+          mkdir -p dist
+          cp "$SRC_APK" "dist/$APK_NAME"
+
+          echo "APK: dist/$APK_NAME  ($(du -h "dist/$APK_NAME" | cut -f1))"
+          echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+
+          if command -v apksigner >/dev/null 2>&1; then
+            apksigner verify --print-certs "dist/$APK_NAME" > "$RUNNER_TEMP/apk-certs.txt" 2>&1 \
+              && echo "签名校验通过" || echo "::warning::apksigner 校验未通过，请检查密钥配置。"
+            head -n 5 "$RUNNER_TEMP/apk-certs.txt" || true
+          fi
+
+      - name: Upload generated keystore (首次生成时)
+        if: steps.sign.outputs.generated == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ci-keystore
+          path: ${{ runner.temp }}/keystore-out
+          retention-days: 14
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Android — oss release APK"
+            echo ""
+            echo "- 版本：${{ steps.meta.outputs.version_name }} (${{ steps.meta.outputs.version_code }})"
+            echo "- 文件：\`${{ steps.package.outputs.apk_name }}\`"
+            echo "- 签名：CI 密钥库（${{ steps.sign.outputs.generated == 'true' && '本次随机生成' || '取自 Secret' }}）"
+            echo "- 风味：oss（applicationId 后缀 \`.oss\`）"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # iOS：未签名 IPA（无证书 / 无描述文件）
+  # ---------------------------------------------------------------------------
+  ios:
+    name: Build iOS unsigned IPA
+    # 工程由 Xcode 26.5+ 创建；macos-15 最高只有 Xcode 26.3，必须用 macos-26。
+    runs-on: macos-26
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      build: ${{ steps.package.outputs.build }}
+      ipa_name: ${{ steps.package.outputs.ipa_name }}
+
+    env:
+      PROJECT_PATH: apps/ios/Orange Cloud/Orange Cloud.xcodeproj
+      SCHEME: Orange Cloud
+      DERIVED_DATA: ${{ github.workspace }}/build/DerivedData
+      ARTIFACT_DIR: ${{ github.workspace }}/build/artifacts
+      RESULT_BUNDLE: ${{ github.workspace }}/build/OrangeCloud.xcresult
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode 26.5+
+        run: |
+          set -euo pipefail
+          echo "已安装的 Xcode："
+          ls -1d /Applications/Xcode*.app 2>/dev/null || true
+
+          SELECTED="$(ls -1d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n1 || true)"
+          if [[ -z "$SELECTED" || ! -d "$SELECTED" ]]; then
+            if [[ -d /Applications/Xcode.app ]]; then
+              SELECTED="/Applications/Xcode.app"
+            else
+              echo "error: 未找到任何 Xcode" >&2
+              exit 1
+            fi
+          fi
+
+          echo "使用 Xcode: $SELECTED"
+          sudo xcode-select -s "$SELECTED"
+          sudo xcodebuild -license accept || true
+          xcodebuild -version
+          xcodebuild -showsdks | grep -E 'iphoneos|watchos' || true
+
+          XCODE_VER="$(xcodebuild -version | awk '/Xcode/ {print $2}')"
+          MAJOR="$(echo "$XCODE_VER" | cut -d. -f1)"
+          MINOR="$(echo "$XCODE_VER" | cut -d. -f2)"
+          if [[ "$MAJOR" -lt 26 ]] || { [[ "$MAJOR" -eq 26 ]] && [[ "${MINOR:-0}" -lt 5 ]]; }; then
+            echo "error: 需要 Xcode >= 26.5（工程 CreatedOnToolsVersion 26.5/27.0），当前 $XCODE_VER" >&2
+            exit 1
+          fi
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -derivedDataPath "$DERIVED_DATA"
+
+      - name: Show scheme / destinations
+        run: |
+          set -euo pipefail
+          xcodebuild -list -project "$PROJECT_PATH"
+          xcodebuild -showBuildSettings \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            | grep -E 'PRODUCT_BUNDLE_IDENTIFIER|MARKETING_VERSION|CURRENT_PROJECT_VERSION|IPHONEOS_DEPLOYMENT_TARGET|SDKROOT|CODE_SIGN|SWIFT_VERSION' \
+            | head -n 60 || true
+
+      - name: Build (unsigned, device)
+        run: |
+          set -euo pipefail
+          mkdir -p "$DERIVED_DATA" "$ARTIFACT_DIR"
+          rm -rf "$RESULT_BUNDLE"
+
+          # 自编译路径：解锁全部 Pro 功能（见 CONTRIBUTING.md）。
+          UNLOCK_FLAGS=(SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) OPENSOURCE_UNLOCKED')
+
+          COMMON_ARGS=(
+            -project "$PROJECT_PATH"
+            -scheme "$SCHEME"
+            -configuration Release
+            -destination "generic/platform=iOS"
+            -derivedDataPath "$DERIVED_DATA"
+            -resultBundlePath "$RESULT_BUNDLE"
+            -skipPackagePluginValidation
+            -skipMacroValidation
+            ONLY_ACTIVE_ARCH=NO
+          )
+
+          set -o pipefail
+          set +e
+          set -x
+          # 首选：完全不签名，产出可在本地重签的原始二进制。
+          xcodebuild \
+            "${COMMON_ARGS[@]}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            PROVISIONING_PROFILE_SPECIFIER= \
+            "${UNLOCK_FLAGS[@]}" \
+            build 2>&1 | tee "$ARTIFACT_DIR/xcodebuild.log"
+          STATUS=${PIPESTATUS[0]}
+          set +x
+
+          if [[ $STATUS -ne 0 ]]; then
+            echo "完全未签名构建失败（exit $STATUS），回退到 ad-hoc 签名 CODE_SIGN_IDENTITY=- ..."
+            rm -rf "$RESULT_BUNDLE"
+            xcodebuild \
+              "${COMMON_ARGS[@]}" \
+              CODE_SIGN_IDENTITY=- \
+              CODE_SIGNING_REQUIRED=YES \
+              CODE_SIGNING_ALLOWED=YES \
+              CODE_SIGN_STYLE=Manual \
+              DEVELOPMENT_TEAM= \
+              PROVISIONING_PROFILE_SPECIFIER= \
+              "${UNLOCK_FLAGS[@]}" \
+              build 2>&1 | tee -a "$ARTIFACT_DIR/xcodebuild.log"
+            STATUS=${PIPESTATUS[0]}
+          fi
+
+          exit $STATUS
+
+      - name: Dump build errors on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          LOG="$ARTIFACT_DIR/xcodebuild.log"
+          {
+            echo "## Build failure summary"
+            echo ""
+            echo "Xcode: $(xcodebuild -version | tr '\n' ' ')"
+            echo ""
+            if [[ -f "$LOG" ]]; then
+              echo "### error lines"
+              echo '```'
+              grep -E 'error:|fatal error:|BUILD FAILED|Provisioning|CodeSign|requires a development team|entitlement' "$LOG" | tail -n 120 || true
+              echo '```'
+              echo ""
+              echo "### last 100 log lines"
+              echo '```'
+              tail -n 100 "$LOG" || true
+              echo '```'
+            else
+              echo "未生成 xcodebuild.log"
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          if [[ -d "$RESULT_BUNDLE" ]]; then
+            xcrun xcresulttool get --path "$RESULT_BUNDLE" --format json > "$ARTIFACT_DIR/xcresult.json" 2>/dev/null || true
+          fi
+
+      - name: Locate .app and package IPA
+        id: package
+        run: |
+          set -euo pipefail
+
+          APP_PATH=""
+          PREFERRED="$DERIVED_DATA/Build/Products/Release-iphoneos/Orange Cloud.app"
+          if [[ -d "$PREFERRED" ]]; then
+            APP_PATH="$PREFERRED"
+          else
+            while IFS= read -r -d '' candidate; do
+              APP_PATH="$candidate"
+              break
+            done < <(find "$DERIVED_DATA/Build/Products" -type d -name 'Orange Cloud.app' -print0 2>/dev/null || true)
+          fi
+          if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
+            echo "error: 在 DerivedData 下未找到 Orange Cloud.app" >&2
+            find "$DERIVED_DATA/Build/Products" -maxdepth 3 -type d || true
+            exit 1
+          fi
+          echo "App: $APP_PATH"
+
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist" 2>/dev/null || echo "0.0.0")"
+          BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist" 2>/dev/null || echo "0")"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IPA_NAME="OrangeCloud-${VERSION}-${BUILD}-${SHORT_SHA}-unsigned.ipa"
+          IPA_PATH="$ARTIFACT_DIR/$IPA_NAME"
+
+          chmod +x apps/ios/scripts/package-unsigned-ipa.sh
+          apps/ios/scripts/package-unsigned-ipa.sh "$APP_PATH" "$IPA_PATH"
+
+          mkdir -p dist
+          cp "$IPA_PATH" "dist/$IPA_NAME"
+
+          {
+            echo "ipa_path=$IPA_PATH"
+            echo "ipa_name=$IPA_NAME"
+            echo "version=$VERSION"
+            echo "build=$BUILD"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## iOS — unsigned IPA"
+            echo ""
+            echo "- **File:** \`$IPA_NAME\`"
+            echo "- **Version:** $VERSION ($BUILD)"
+            echo "- **Signing:** 无 / ad-hoc（安装前需本地重签）"
+            echo "- **OPENSOURCE_UNLOCKED:** 已启用（Pro 全解锁）"
+            echo "- **Xcode:** $(xcodebuild -version | tr '\n' ' ')"
+            echo "- **Runner:** macos-26"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcodebuild-log
+          path: |
+            ${{ env.ARTIFACT_DIR }}/xcodebuild.log
+            ${{ env.ARTIFACT_DIR }}/xcresult.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 发布：把两端产物合并挂到同一个 Release
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish GitHub Release
+    needs:
+      - android
+      - ios
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Collect assets
+        id: collect
+        run: |
+          set -euo pipefail
+          ASSETS="$(find dist -type f \( -name '*.ipa' -o -name '*.apk' \) 2>/dev/null | sort || true)"
+          if [[ -z "$ASSETS" ]]; then
+            echo "has_assets=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::两端均未产出产物，跳过 Release 发布。"
+            exit 0
+          fi
+          echo "has_assets=true" >> "$GITHUB_OUTPUT"
+          echo "收集到的产物："
+          echo "$ASSETS"
+          echo "$ASSETS" > "$RUNNER_TEMP/assets.txt"
+
+      - name: Resolve tag and options
+        id: opts
+        env:
+          IN_TAG: ${{ inputs.tag }}
+          IN_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          TAG="${IN_TAG:-}"
+          [[ -z "$TAG" ]] && TAG="ci-latest"
+          PRE="${IN_PRERELEASE:-}"
+          [[ -z "$PRE" ]] && PRE="true"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG (prerelease=$PRE)"
+
+      - name: Compose release body
+        env:
+          IOS_VERSION: ${{ needs.ios.outputs.version }}
+          IOS_BUILD: ${{ needs.ios.outputs.build }}
+          ANDROID_VERSION: ${{ needs.android.outputs.version_name }}
+          ANDROID_CODE: ${{ needs.android.outputs.version_code }}
+          ANDROID_KEYSTORE_GENERATED: ${{ needs.android.outputs.keystore_generated }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA::7}"
+          {
+            echo "由 GitHub Actions 自动构建，来自 \`${GITHUB_REF_NAME}\` @ \`${SHORT_SHA}\`。"
+            echo ""
+            echo "| 平台 | 版本 | 产物 |"
+            echo "| --- | --- | --- |"
+            echo "| iOS | ${IOS_VERSION:-—} (${IOS_BUILD:-—}) | \`*.ipa\`（未签名） |"
+            echo "| Android | ${ANDROID_VERSION:-—} (${ANDROID_CODE:-—}) | \`*.apk\`（oss，CI 签名） |"
+            echo ""
+            echo "### 安装须知"
+            echo ""
+            echo "- **iOS**：产物**未签名**，无法直接安装。请用自有证书 / 描述文件在本地重签（或使用 AltStore 等工具）。构建已启用 \`OPENSOURCE_UNLOCKED\`，Pro 功能全解锁。"
+            echo "- **Android**：\`oss\` 风味（applicationId 后缀 \`.oss\`），与官方版可共存；签名由 CI 密钥库提供。"
+            if [[ "${ANDROID_KEYSTORE_GENERATED:-}" == "true" ]]; then
+              echo "  - ⚠️ 本次构建**随机生成**了签名密钥库，与历史产物签名不同，无法互相覆盖安装。请将该次运行的 \`android-ci-keystore\` 工件保存为仓库 Secret \`ANDROID_KEYSTORE_BASE64\` 以固定签名。"
+            fi
+            echo ""
+            echo "---"
+            echo ""
+            echo "工作流运行：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > "$RUNNER_TEMP/release-body.md"
+          cat "$RUNNER_TEMP/release-body.md"
+
+      - name: Create or update release
+        if: steps.collect.outputs.has_assets == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.opts.outputs.tag }}
+          name: Orange Cloud ${{ steps.opts.outputs.tag }}
+          body_path: ${{ runner.temp }}/release-body.md
+          prerelease: ${{ steps.opts.outputs.prerelease == 'true' }}
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/**/*.ipa
+            dist/**/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release summary
+        if: steps.collect.outputs.has_assets == 'true'
+        run: |
+          {
+            echo "## Release"
+            echo ""
+            echo "- tag：\`${{ steps.opts.outputs.tag }}\`"
+            echo "- 预发布：${{ steps.opts.outputs.prerelease }}"
+            echo "- 产物："
+            sed 's/^/  - `/; s/$/`/' "$RUNNER_TEMP/assets.txt"
+          } >> "$GITHUB_STEP_SUMMARY"

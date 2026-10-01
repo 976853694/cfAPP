@@ -3,18 +3,20 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { TimeText } from "@/components/dashboard/prefs";
-import { Badge } from "@/components/dashboard/ui";
+import { Badge, PlatformBadge } from "@/components/dashboard/ui";
 import { formatMoney } from "@/lib/dashboard/format";
 import type { NotificationRow } from "@/lib/dashboard/queries";
 import {
 	notificationLabel,
 	notificationTone,
 	offerTypeLabel,
+	orderStateLabel,
 	productLabel,
 	revocationReasonLabel,
 	subtypeLabel,
 	txTypeLabel,
 } from "@/lib/dashboard/types";
+import { isCollectedOrderState } from "@/lib/ledger/order-state";
 
 export function NotificationRows({ rows }: { rows: NotificationRow[] }) {
 	const [selected, setSelected] = useState<NotificationRow | null>(null);
@@ -34,6 +36,9 @@ export function NotificationRows({ rows }: { rows: NotificationRow[] }) {
 							<TimeText ms={n.received_at} />
 						</td>
 						<td className="px-5 py-2.5 whitespace-nowrap">
+							<PlatformBadge platform={n.platform} />
+						</td>
+						<td className="px-5 py-2.5 whitespace-nowrap">
 							<Badge tone={notificationTone(n.notification_type)}>
 								{notificationLabel(n.notification_type)}
 							</Badge>
@@ -42,7 +47,13 @@ export function NotificationRows({ rows }: { rows: NotificationRow[] }) {
 							{sub ? <Badge tone="muted">{sub}</Badge> : <span className="text-muted">—</span>}
 						</td>
 						<td className="px-5 py-2.5 font-mono text-[11px] whitespace-nowrap text-muted">
-							{n.original_transaction_id ?? "—"}
+							{/* Play 的 purchaseToken 很长（几百字符），截断显示、hover 看全量 */}
+							<span
+								className="inline-block max-w-56 truncate align-bottom"
+								title={n.original_transaction_id ?? undefined}
+							>
+								{n.original_transaction_id ?? "—"}
+							</span>
 						</td>
 						<td className="px-5 py-2.5 text-right whitespace-nowrap tabular-nums">
 							{n.txn?.price_millis != null ? (
@@ -88,6 +99,7 @@ function NotificationModal({
 	const n = notification;
 	const t = n.txn;
 	const refunded = t?.revocation_date != null;
+	const uncollected = t != null && !isCollectedOrderState(t.order_state);
 
 	return (
 		<div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -105,6 +117,7 @@ function NotificationModal({
 				<div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
 					<div className="min-w-0">
 						<div className="flex flex-wrap items-center gap-1.5">
+							<PlatformBadge platform={n.platform} />
 							<Badge tone={notificationTone(n.notification_type)}>
 								{notificationLabel(n.notification_type)}
 							</Badge>
@@ -134,6 +147,11 @@ function NotificationModal({
 										? ` · ${revocationReasonLabel(t.revocation_reason)}`
 										: ""}
 								</div>
+							) : uncollected ? (
+								// Play 宽限期 / 待付款：订单有金额但尚未扣款成功，不计入营收
+								<div className="mb-4 rounded-lg bg-foreground/[0.06] px-3 py-2 text-xs text-muted">
+									{orderStateLabel(t.order_state)} · 该订单尚未到账，不计入营收
+								</div>
 							) : null}
 							<dl className="grid grid-cols-2 gap-x-4 gap-y-3">
 								<Field label="产品">{productLabel(t.product_id)}</Field>
@@ -154,6 +172,8 @@ function NotificationModal({
 								<Field label="状态">
 									{refunded ? (
 										<span className="text-negative">已退款</span>
+									) : uncollected ? (
+										<span className="text-muted">{orderStateLabel(t.order_state)}</span>
 									) : (
 										<span className="text-positive">正常</span>
 									)}
@@ -197,9 +217,10 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 function IdRow({ label, id }: { label: string; id: string | null }) {
 	return (
-		<div className="flex items-center justify-between gap-3 text-[11px]">
-			<span className="text-muted">{label}</span>
-			<span className="font-mono text-muted">{id ?? "—"}</span>
+		<div className="flex items-start justify-between gap-3 text-[11px]">
+			<span className="shrink-0 text-muted">{label}</span>
+			{/* Play 的 purchaseToken 是长串，允许换行以免撑破弹窗 */}
+			<span className="max-w-[70%] font-mono break-all text-muted">{id ?? "—"}</span>
 		</div>
 	);
 }

@@ -10,9 +10,7 @@
 	},
 	"header": {
 		"language": "Idioma",
-		"support": "Apoyar",
-		"download": "App Store",
-		"downloadComing": "En revisión"
+		"support": "Apoyar"
 	},
 	"badge": {
 		"line1": "Descárgala en el",
@@ -123,6 +121,13 @@
 		"sub": "El cielo de esta noche ya te espera en la app.",
 		"requirement": "Requiere iOS 17.0+ o Android 9+ · iPhone, iPad y Android"
 	},
+	"sibling": {
+		"eyebrow": "También del mismo desarrollador",
+		"name": "Apolu",
+		"tagline": "Posiciones en el App Store de 175 países",
+		"body": "Sigue la posición de una app en las listas de gratis y de pago, recibe una notificación en cuanto se mueve y consulta ingresos leídos directamente de tu propio App Store Connect, no una estimación de terceros. Para iPhone, iPad y Mac.",
+		"cta": "Échale un vistazo"
+	},
 	"changelog": {
 		"title": "Historial de versiones",
 		"sub": "Orange Cloud ya está en el App Store. Este es el historial de versiones; también puedes unirte a TestFlight para probar las próximas builds antes que nadie.",
@@ -135,7 +140,7 @@
 		"privacy": "Política de privacidad",
 		"terms": "Términos de servicio",
 		"contact": "Contacto",
-		"copyright": "© 2026 Orange Cloud",
+		"copyright": "© 2026 <company>Zhe Tech Co., Ltd.</company>",
 		"disclaimer": "Orange Cloud es un cliente independiente de terceros y no está afiliado, avalado ni patrocinado por Cloudflare, Inc. Cloudflare es una marca registrada de Cloudflare, Inc."
 	},
 	"contact": {
@@ -151,7 +156,7 @@
 	},
 	"privacy": {
 		"title": "Política de privacidad",
-		"updated": "Última actualización: junio de 2026",
+		"updated": "Última actualización: septiembre de 2026",
 		"sections": [
 			{
 				"h": "Recopilación de datos",
@@ -164,6 +169,10 @@
 			{
 				"h": "Servicios de terceros",
 				"p": "Orange Cloud se comunica exclusivamente con los endpoints oficiales de la API de Cloudflare (api.cloudflare.com y dash.cloudflare.com). No se usan otros servicios de terceros."
+			},
+			{
+				"h": "Compras y reembolsos",
+				"p": "Las suscripciones Pro y la compra de por vida se realizan a través de la App Store de Apple. Apple procesa tus datos de pago y nosotros nunca los vemos. Apple envía a nuestro servidor los registros de compras, renovaciones y reembolsos (ID de transacción, producto, monto y región de la tienda, sin tu nombre ni tu Apple Account), que usamos solo para llevar la contabilidad. Cuando le pides un reembolso a Apple, aceptas que le indiquemos a Apple si la compra se entregó y le compartamos nuestra opinión sobre el reembolso para ayudarle a decidir. Esta información no se usa para rastrearte."
 			}
 		]
 	},
