@@ -145,7 +145,19 @@ jobs:
             echo "::warning::未配置 ANDROID_KEYSTORE_BASE64 —— 本次运行为你随机生成一次性密钥库。"
             echo "::warning::请下载下方 android-ci-keystore 工件，base64 后存为仓库 Secret ANDROID_KEYSTORE_BASE64，之后所有构建将复用同一签名。"
             GENERATED="true"
-            STORE_PW="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
+            # 不要用 `tr ... | head -c 32`：head 读够就退出会让 tr 收到 SIGPIPE，
+            # 在 set -o pipefail 下整条管道返回非 0，直接把本步骤干掉。
+            STORE_PW="$(openssl rand -hex 16 2>/dev/null || true)"
+            if [[ -z "$STORE_PW" ]]; then
+              STORE_PW="$(python3 -c 'import secrets; print(secrets.token_hex(16))' 2>/dev/null || true)"
+            fi
+            if [[ -z "$STORE_PW" ]]; then
+              STORE_PW="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+            fi
+            if [[ -z "$STORE_PW" ]]; then
+              echo "::error::无法生成密钥库口令。"
+              exit 1
+            fi
             KEY_PW="$STORE_PW"
             keytool -genkeypair -v \
               -keystore "$KS_FILE" \
@@ -210,7 +222,9 @@ jobs:
         run: |
           set -euo pipefail
           SRC_DIR="apps/android/app/build/outputs/apk/oss/release"
-          SRC_APK="$(find "$SRC_DIR" -maxdepth 1 -type f -name '*.apk' | head -n1)"
+          # 用 -print -quit 让 find 自己取首个结果后退出；`find | head -n1` 会让 find 收到
+          # SIGPIPE，在 pipefail 下同样会把步骤判为失败。
+          SRC_APK="$(find "$SRC_DIR" -maxdepth 1 -type f -name '*.apk' -print -quit)"
           if [[ -z "$SRC_APK" ]]; then
             echo "::error::未找到 oss release APK（$SRC_DIR）。"
             find apps/android/app/build/outputs -maxdepth 5 -type f -name '*.apk' || true
