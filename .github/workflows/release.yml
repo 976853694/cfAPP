@@ -76,15 +76,43 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # 不要用 android-actions/setup-android@v3：它内部会执行 `sdkmanager tools`，
+      # 而新版 cmdline-tools（16.0+）已移除 `tools` 包，该 action 会以 exit code 1 崩溃。
+      # ubuntu-latest 镜像自带完整 Android SDK（ANDROID_HOME=/usr/local/lib/android/sdk）。
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Ensure SDK components
         run: |
-          set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null
-          echo "ANDROID_HOME=$ANDROID_HOME"
+          set -uo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [[ ! -d "$SDK" ]]; then
+            echo "::error::未找到 Android SDK：$SDK"
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          printf 'sdk.dir=%s\n' "$SDK" > apps/android/local.properties
+          echo "Android SDK: $SDK"
+
+          SM=""
+          for candidate in "$SDK/cmdline-tools/latest/bin/sdkmanager" "$SDK/cmdline-tools/bin/sdkmanager"; do
+            [[ -x "$candidate" ]] && { SM="$candidate"; break; }
+          done
+          if [[ -z "$SM" ]]; then
+            for candidate in "$SDK"/cmdline-tools/*/bin/sdkmanager; do
+              [[ -x "$candidate" ]] && { SM="$candidate"; break; }
+            done
+          fi
+
+          if [[ -n "$SM" ]]; then
+            echo "sdkmanager: $SM"
+            yes | "$SM" --licenses >/dev/null 2>&1 || true
+            "$SM" --install "platform-tools" >/dev/null 2>&1 || true
+            "$SM" --install "platforms;android-36" >/dev/null 2>&1 \
+              || echo "::warning::platforms;android-36 安装失败，交由 AGP 自动下载。"
+            "$SM" --install "build-tools;36.0.0" >/dev/null 2>&1 \
+              || echo "::warning::build-tools;36.0.0 安装失败，交由 AGP 自动下载。"
+          else
+            echo "::warning::未找到 sdkmanager，依赖镜像预装 SDK 与已接受的 licenses；缺失组件由 AGP 自动下载。"
+          fi
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
@@ -222,12 +250,19 @@ jobs:
       - name: Job summary
         if: always()
         run: |
+          case "${{ steps.sign.outputs.generated }}" in
+            true)  KEY_SRC="本次随机生成（请转存为 Secret ANDROID_KEYSTORE_BASE64 以固定签名）" ;;
+            false) KEY_SRC="取自 Secret ANDROID_KEYSTORE_BASE64" ;;
+            *)     KEY_SRC="未知 —— 签名准备步骤未执行，构建可能已提前失败" ;;
+          esac
+          APK_NAME="${{ steps.package.outputs.apk_name }}"
+          if [[ -z "$APK_NAME" ]]; then APK_NAME="—（未产出）"; fi
           {
             echo "## Android — oss release APK"
             echo ""
             echo "- 版本：${{ steps.meta.outputs.version_name }} (${{ steps.meta.outputs.version_code }})"
-            echo "- 文件：\`${{ steps.package.outputs.apk_name }}\`"
-            echo "- 签名：CI 密钥库（${{ steps.sign.outputs.generated == 'true' && '本次随机生成' || '取自 Secret' }}）"
+            echo "- 文件：\`$APK_NAME\`"
+            echo "- 签名来源：$KEY_SRC"
             echo "- 风味：oss（applicationId 后缀 \`.oss\`）"
           } >> "$GITHUB_STEP_SUMMARY"
 
