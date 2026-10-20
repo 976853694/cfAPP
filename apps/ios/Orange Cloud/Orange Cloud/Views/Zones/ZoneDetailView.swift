@@ -616,7 +616,8 @@ struct ZoneDetailView: View {
         }
     }
 
-    var body: some View {
+    /// 页面骨架与生命周期：导航、工具栏、触感、任务、下拉刷新。
+    private var pageChrome: some View {
         content
         .background { SkyBackground() }
         .navigationTitle(zone.name)
@@ -668,6 +669,12 @@ struct ZoneDetailView: View {
             }
             await syncPausedFromAPI()
         }
+    }
+
+    /// 缓存相关的确认与提示。
+    @ViewBuilder
+    private var cacheDialogs: some View {
+        pageChrome
         .confirmationDialog(
             pendingAction?.title ?? "",
             isPresented: .init(
@@ -717,6 +724,12 @@ struct ZoneDetailView: View {
         } message: {
             Text("保留缓存但标记为过期，下次请求时向源站校验；内容没变（304）就继续用缓存。需要源站返回 ETag 或 Last-Modified。")
         }
+    }
+
+    /// 操作结果、授权提示与清缓存面板。
+    @ViewBuilder
+    private var actionDialogs: some View {
+        cacheDialogs
         .sheet(isPresented: $showPurgeSheet) {
             PurgeCacheSheet(zoneName: zone.name) { mode, items, action in
                 switch mode {
@@ -750,6 +763,10 @@ struct ZoneDetailView: View {
         } message: {
             Text(actionsViewModel.error ?? "")
         }
+    }
+
+    var body: some View {
+        actionDialogs
     }
 
     // MARK: - 暂停态与缓存同步
