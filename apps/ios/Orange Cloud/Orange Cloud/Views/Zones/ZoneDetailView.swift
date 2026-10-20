@@ -93,6 +93,16 @@ struct ZoneDetailView: View {
         }
     }
 
+    /// 操作失败弹窗的呈现绑定。
+    /// 需显式标注类型：body 内联的 get/set 闭包会让整个链式表达式在 Xcode 26.6 上
+    /// 推断超时（error: unable to type-check this expression in reasonable time）。
+    private var actionErrorPresented: Binding<Bool> {
+        Binding(
+            get: { actionsViewModel.error != nil },
+            set: { presented in if !presented { actionsViewModel.error = nil } }
+        )
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -687,10 +697,7 @@ struct ZoneDetailView: View {
         } message: {
             Text("当前授权未包含此操作所需权限（\(deniedScopeHint)）。点「一键重授权」补齐，无需退出登录。")
         }
-        .alert("操作失败", isPresented: .init(
-            get: { actionsViewModel.error != nil },
-            set: { if !$0 { actionsViewModel.error = nil } }
-        )) {
+        .alert("操作失败", isPresented: actionErrorPresented) {
             apiErrorDocButton(for: actionsViewModel.error)
             Button("好", role: .cancel) {}
         } message: {
