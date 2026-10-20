@@ -351,20 +351,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select newest Xcode 26.5+
+      - name: Select Xcode 26.5
         run: |
           set -euo pipefail
           echo "已安装的 Xcode："
           ls -1d /Applications/Xcode*.app 2>/dev/null || true
 
-          SELECTED="$(ls -1d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n1 || true)"
+          # 钉在工程声明的最低版本（CreatedOnToolsVersion 26.5），而不是取最新。
+          # 26.6 的 Swift 类型检查器在 ZoneDetailView 这类大视图上更早放弃，
+          # 同一个文件在 26.5 下能通过。
+          SELECTED=""
+          for candidate in /Applications/Xcode_26.5.app /Applications/Xcode_26.5.0.app; do
+            if [[ -d "$candidate" ]]; then SELECTED="$candidate"; break; fi
+          done
+          if [[ -z "$SELECTED" ]]; then
+            SELECTED="$(ls -1d /Applications/Xcode_26.5*.app 2>/dev/null | sort -V | head -n1 || true)"
+          fi
           if [[ -z "$SELECTED" || ! -d "$SELECTED" ]]; then
-            if [[ -d /Applications/Xcode.app ]]; then
-              SELECTED="/Applications/Xcode.app"
-            else
-              echo "error: 未找到任何 Xcode" >&2
-              exit 1
-            fi
+            echo "error: 未找到 Xcode 26.5" >&2
+            exit 1
           fi
 
           echo "使用 Xcode: $SELECTED"
