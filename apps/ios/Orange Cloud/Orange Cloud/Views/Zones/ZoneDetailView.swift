@@ -587,29 +587,41 @@ struct ZoneDetailView: View {
         }
     }
 
+    /// 固定按钮的标题与图标单独给出：三目运算里嵌 `String(localized:)` 会让
+    /// `Button(_:systemImage:action:)` 的推断量陡增。
+    private var pinnedButtonTitle: String {
+        isPinned ? String(localized: "取消固定") : String(localized: "固定到首页")
+    }
+
+    private var pinnedButtonIcon: String {
+        isPinned ? "pin.fill" : "pin"
+    }
+
+    @ToolbarContentBuilder
+    private var trailingToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            // 置顶以 PinnedResourceStore 为准（跨资源类型统一）；同时把旧的
+            // CachedZone.pinned 字段镜像写回，老数据/其它入口读它时不至于分裂。
+            Button(pinnedButtonTitle, systemImage: pinnedButtonIcon) {
+                let nowPinned = pinnedStore.toggle(
+                    PinnedResource(type: .zone, resourceId: zone.id),
+                    accountId: zone.accountId
+                )
+                withAnimation(.smooth) {
+                    zone.pinned = nowPinned
+                }
+                SafeCache.perform("pin 状态保存") { try modelContext.save() }
+            }
+            .contentTransition(.symbolEffect(.replace))
+        }
+    }
+
     var body: some View {
         content
         .background { SkyBackground() }
         .navigationTitle(zone.name)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                // 置顶以 PinnedResourceStore 为准（跨资源类型统一）；同时把旧的
-                // CachedZone.pinned 字段镜像写回，老数据/其它入口读它时不至于分裂。
-                Button(isPinned ? String(localized: "取消固定") : String(localized: "固定到首页"),
-                       systemImage: isPinned ? "pin.fill" : "pin") {
-                    let nowPinned = pinnedStore.toggle(
-                        PinnedResource(type: .zone, resourceId: zone.id),
-                        accountId: zone.accountId
-                    )
-                    withAnimation(.smooth) {
-                        zone.pinned = nowPinned
-                    }
-                    SafeCache.perform("pin 状态保存") { try modelContext.save() }
-                }
-                .contentTransition(.symbolEffect(.replace))
-            }
-        }
+        .toolbar { trailingToolbar }
         .sensoryFeedback(.impact(weight: .light), trigger: zone.pinned)
         .sensoryFeedback(.success, trigger: actionsViewModel.didPurge)
         .sensoryFeedback(.success, trigger: actionsViewModel.didInvalidate)
